@@ -8,7 +8,7 @@ LIB_DIR='lib'
 HEADER_DIR='../source/h'
 SOURCE_DIR='../source/c'
 
-SOURCE_FILES=('app.c')
+SOURCE_FILES=('app.c log.c tcp_server.c')
 
 if [ ! -d $BUILD_DIR ]; then
   mkdir $BUILD_DIR;
@@ -33,5 +33,9 @@ do
   BUILD_STRING+=' '
 done
 
-gcc -c -o $BUILD_DIR/$LIB_DIR/$TARGET -g -D ISDITE_PLATFORM=0 \
+gcc -c -g -march=native -D ISDITE_PLATFORM=0 -lpthread \
 -D ISDITE_PLATFORM_SPEC=0 -D ISDITE_DEBUG=1 -I $HEADER_DIR $BUILD_STRING
+
+ar -rcs $TARGET *.o
+rm *.o
+mv $TARGET $BUILD_DIR/$LIB_DIR/$TARGET
