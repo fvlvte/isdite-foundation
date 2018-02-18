@@ -23,6 +23,14 @@ struct _isdite_fn_tcpServer_descriptorImpl
 
 void * _isdite_fn_tcpServer_ioWorker(void * desc)
 {
+  epoll_event events[1024];
+  while(1==1)
+  {
+    int r = epoll_wait (desc->epollDescriptor, events, 1024, -1);
+
+
+
+  }
   return NULL;
 }
 
@@ -32,7 +40,7 @@ isdite_fn_tcp isdite_fn_tcpServer_create(int port)
 
   desc->acceptorSocket = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 
-  desc->epollDescriptor = epoll_create1(0);
+  desc->epollDescriptor = epoll_create(1024);
 
   struct sockaddr_in serv_addr, cli_addr;
   serv_addr.sin_family = AF_INET;
