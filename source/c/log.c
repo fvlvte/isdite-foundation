@@ -71,7 +71,7 @@ void isdite_fn_syslog(int sev, const char * str)
   _isdite_fn_syslog_makeLogHeader(sev, (char*)str);
 }
 
-void isdite_fn_fsyslog(const char * fmt, ...)
+void isdite_fn_fsyslog(int sev, const char * fmt, ...)
 {
 
 }

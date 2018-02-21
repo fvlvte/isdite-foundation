@@ -1,4 +1,12 @@
-#include "tcp_server.h"
+#define ISDITE_TPLATFORM_LINUX 0
+
+#if ISDITE_PLATFORM != ISDITE_TPLATFORM_LINUX
+#error "Not implemented."
+#endif
+
+#undef ISDITE_TPLATFORM_LINUX
+
+/* global includes */
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -10,6 +18,14 @@
 #include <string.h>
 #include <stdio.h>
 #include <fcntl.h>
+#include <errno.h>
+
+/* local includes */
+
+#include "tcp_server.h"
+#include "log.h"
+
+/* old - delete me plz */
 
 struct _isdite_fn_tcpServer_client
 {
@@ -21,21 +37,105 @@ struct _isdite_fn_tcpServer_client
 
 const char * mocked = "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{\"hello\":\"world\"}";
 
-static inline void _isdite_fn_tcpServer_setSocketNonBlock(int fd)
-{
-   int flags = fcntl(fd, F_GETFL, 0);
-   flags |= O_NONBLOCK;
-   fcntl(fd, F_SETFL, flags);
-}
-
 struct _isdite_fn_tcpServer_descriptorImpl
 {
   int acceptorSocket;
   int epollDescriptor;
+
   pthread_t workerDescriptor;
 };
 
-void * _isdite_fn_tcpServer_ioWorker(struct _isdite_fn_tcpServer_descriptorImpl *  desc)
+/* local defs cfg - plz undef at end, dont do preprocessor shitparadise */
+
+#define _ISDITE_TCPSRV_CLI_UDATA_SIZE   8192  // Preserved userdata buffer per client.
+#define _ISDITE_TCPSRV_MAX_CLI          10000 // Maximum count of active connections (and size of the connection pool).
+#define _ISDITE_TCPSRV_CBACKLOG         1024  // Connection backlog.
+#define _ISDITE_TCPSRV_KEEPALIVE              // Should we use keep alive?
+
+/* internal structure definition */
+
+struct _isdite_fdn_tcpSrv_cliDesc /* client descriptor */
+{
+  /* os info tracker */
+  int sock;
+  int status;
+
+  /* user data - subject to change */
+  u_int8_t userData[_ISDITE_TCPSRV_CLI_UDATA_SIZE];
+  void * userDataPtr;
+
+  /* remote connection desc */
+  struct sockaddr_in addrInfo;
+  int addrInfoLen;
+
+#ifdef ISIDTE_WPP
+  /* worker pool preferences */
+  int prefWorkerThread;
+#endif
+
+#ifdef ISDITE_NETSTAT
+  /* statistics */
+  int establishedTimestamp;
+  int lastActiveTimestamp;
+
+  int bytesIn;
+  int bytesOut;
+
+  int fingerprintGuid;
+#endif
+};
+
+struct _isdite_fdn_tcpSrv_srvDesc /* server descriptor */
+{
+  /* internal sys descriptors */
+  int epollFd;
+  int netSockFd;
+
+  /* client cache, !NEVER! create new connections on heap */
+  struct _isdite_fdn_tcpSrv_cliDesc * clientPool;
+  struct _isdite_fdn_tcpSrv_cliDesc ** clientStack;
+  int clientStackTop;
+
+  /* net i/o worker thread */
+  pthread_t workerFd;
+
+#ifdef ISDITE_NETSTAT
+  /* server statistics */
+  int connAlive;
+  int connPassed;
+#endif
+};
+
+/* method impl */
+
+static inline void _isdite_fn_tcpServer_setSocketNonBlock(int fd)
+{
+   int res = fcntl(fd, F_GETFL, 0);
+
+   #if defined(ISDITE_DEBUG) || defined(ISDITE_PEDANTIC_CHECKLOG)
+
+   if(res == -1)
+   {
+     isdite_fn_fsyslog(ISDITE_LOG_SEVERITY_ERRO, "<_isdite_fn_tcpServer_setSocketNonBlock> Failed to get socket flags for fd %d.", fd);
+     return;
+   }
+
+   #endif
+
+   res = fcntl(fd, F_SETFL, res | O_NONBLOCK);
+
+   #if defined(ISDITE_DEBUG) || defined(ISDITE_PEDANTIC_CHECKLOG)
+
+   if(res == -1)
+   {
+     isdite_fn_fsyslog(ISDITE_LOG_SEVERITY_ERRO, "<_isdite_fn_tcpServer_setSocketNonBlock> Failed to set socket flags for fd %d.", fd);
+     return;
+   }
+
+   #endif
+}
+
+void * _isdite_fn_tcpServer_netIoWorker(struct _isdite_fn_tcpServer_descriptorImpl *  desc)
 {
   int idCounter = 0;
   struct epoll_event events[1024];
@@ -103,28 +203,136 @@ void * _isdite_fn_tcpServer_ioWorker(struct _isdite_fn_tcpServer_descriptorImpl 
 
 isdite_fn_tcp isdite_fn_tcpServer_create(int port)
 {
-  struct _isdite_fn_tcpServer_descriptorImpl * desc = (struct _isdite_fn_tcpServer_descriptorImpl *)malloc(sizeof(struct _isdite_fn_tcpServer_descriptorImpl));
+  struct _isdite_fdn_tcpSrv_srvDesc * srvDesc =
+    (struct _isdite_fdn_tcpSrv_srvDesc *)
+      calloc(0, sizeof(struct _isdite_fdn_tcpSrv_srvDesc));
 
-  desc->acceptorSocket = socket(AF_INET, SOCK_STREAM, 0);
+  #ifdef ISDITE_DEBUG
+  if(srvDesc == NULL)
+  {
+    isdite_fn_fsyslog(ISDITE_LOG_SEVERITY_ERRO, "<isdite_fn_tcpServer_create> Failed to allocate memory for server descriptor (%d).", errno);
 
-  _isdite_fn_tcpServer_setSocketNonBlock(desc->acceptorSocket);
+    return NULL;
+  }
+  #endif
 
-  desc->epollDescriptor = epoll_create(1024);
+  srvDesc->clientPool =
+    (struct _isdite_fdn_tcpSrv_cliDesc*)
+      malloc(sizeof(struct _isdite_fdn_tcpSrv_cliDesc) * _ISDITE_TCPSRV_MAX_CLI);
 
-  struct sockaddr_in serv_addr, cli_addr;
-  serv_addr.sin_family = AF_INET;
-  serv_addr.sin_addr.s_addr = INADDR_ANY;
-  serv_addr.sin_port = htons(port);
+  #ifdef ISDITE_DEBUG
+  if(srvDesc->clientPool == NULL)
+  {
+    isdite_fn_fsyslog(ISDITE_LOG_SEVERITY_ERRO, "<isdite_fn_tcpServer_create> Failed to allocate memory for client pool (%d).", errno);
 
-  bind(desc->acceptorSocket, (struct sockaddr *) &serv_addr, sizeof(serv_addr));
-  listen(desc->acceptorSocket, 1024);
+    goto cleanExit;
+  }
+  #endif
 
-  struct epoll_event event;
-  event.events = EPOLLIN | EPOLLET;
-  event.data.u64 = desc->acceptorSocket;
-  epoll_ctl(desc->epollDescriptor, EPOLL_CTL_ADD, desc->acceptorSocket, &event);
+  srvDesc->clientStack = (struct _isdite_fdn_tcpSrv_cliDesc**)
+    malloc(sizeof(struct _isdite_fdn_tcpSrv_cliDesc*) * _ISDITE_TCPSRV_MAX_CLI);
 
-  pthread_create(&desc->workerDescriptor, NULL, (void * (*)(void *))&_isdite_fn_tcpServer_ioWorker, desc);
+  #ifdef ISDITE_DEBUG
+  if(srvDesc->clientStack == NULL)
+  {
+    isdite_fn_fsyslog(ISDITE_LOG_SEVERITY_ERRO, "<isdite_fn_tcpServer_create> Failed to allocate memory for client stack (%d).", errno);
 
-  return desc;
+    goto cleanExit;
+  }
+  #endif
+
+  for(int i = 0; i < _ISDITE_TCPSRV_MAX_CLI;i++)
+    srvDesc->clientStack[i] = &srvDesc->clientPool[i];
+
+  srvDesc->clientStackTop = _ISDITE_TCPSRV_MAX_CLI - 1;
+
+  #ifdef ISDITE_NETSTAT
+  srvDesc->connAlive = 0;
+  srvDesc->connPassed = 0;
+  #endif
+
+  // We need to create IPv4 TCP socket so AF_INET and SOCK_STREAM.
+  srvDesc->netSockFd = socket(AF_INET, SOCK_STREAM, 0);
+
+  if(srvDesc->netSockFd == -1)
+  {
+    srvDesc->netSockFd = 0;
+
+    isdite_fn_fsyslog(ISDITE_LOG_SEVERITY_ERRO, "<isdite_fn_tcpServer_create> Failed to create acceptor socket (%d).", errno);
+
+    goto errClean;
+  }
+
+  // Set proper flag for acceptor socket.
+  _isdite_fn_tcpServer_setSocketNonBlock(srvDesc->netSockFd);
+
+  // Create epoll queue.
+  srvDesc->epollFd = epoll_create1(0);
+
+  if(srvDesc->epollFd == -1)
+  {
+    srvDesc->epollFd = 0;
+
+    isdite_fn_fsyslog(ISDITE_LOG_SEVERITY_ERRO, "<isdite_fn_tcpServer_create> Failed to create epoll queue (%d).", errno);
+
+    goto errClean;
+  }
+
+  // Bind acceptor socket to given port.
+  struct sockaddr_in serverInfo;
+  serverInfo.sin_family = AF_INET;
+  serverInfo.sin_addr.s_addr = INADDR_ANY;
+  serverInfo.sin_port = htons(port);
+
+  if(bind(srvDesc->netSockFd, (struct sockaddr *)&serverInfo, sizeof(serverInfo)) == -1)
+  {
+    isdite_fn_fsyslog(ISDITE_LOG_SEVERITY_ERRO, "<isdite_fn_tcpServer_create> Failed to bind acceptor socket (%d).", errno);
+
+    goto errClean;
+  }
+
+  // Put acceptor socket into listening state.
+  if(listen(srvDesc->netSockFd, _ISDITE_TCPSRV_CBACKLOG) == -1)
+  {
+    isdite_fn_fsyslog(ISDITE_LOG_SEVERITY_ERRO, "<isdite_fn_tcpServer_create> Failed to set acceptor socket into listening state (%d).", errno);
+
+    goto errClean;
+  }
+
+  // Create worker thread.
+  int res = pthread_create(&srvDesc->workerFd, NULL, (void * (*)(void *))&_isdite_fn_tcpServer_netIoWorker, srvDesc);
+
+  if(res != 0)
+  {
+    isdite_fn_fsyslog(ISDITE_LOG_SEVERITY_ERRO, "<isdite_fn_tcpServer_create> Failed to start network i/o worker thread (%d).", res);
+
+    goto errClean;
+  }
+
+  goto cleanExit;
+
+  errClean:
+
+  if(srvDesc->epollFd != 0)
+    close(srvDesc->epollFd);
+
+  if(srvDesc->netSockFd != 0)
+    close(srvDesc->netSockFd);
+
+  if(srvDesc->clientPool != NULL)
+    free(srvDesc->clientPool);
+
+  if(srvDesc->clientStack != NULL)
+    free(srvDesc->clientStack);
+
+  free(srvDesc);
+  srvDesc = NULL;
+
+  cleanExit:
+  return srvDesc;
 }
+
+#undef _ISDITE_TCPSRV_CLI_UDATA_SIZE
+#undef _ISDITE_TCPSRV_MAX_CLI
+#undef _ISDITE_TCPSRV_KEEPALIVE
+#undef _ISDITE_TCPSRV_CBACKLOG
