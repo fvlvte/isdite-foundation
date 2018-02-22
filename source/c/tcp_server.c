@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <signal.h>
 
 /* local includes */
 
@@ -48,11 +49,15 @@ struct _isdite_fn_tcpServer_descriptorImpl
 /* local defs cfg - plz undef at end, dont do preprocessor shitparadise */
 
 #define _ISDITE_TCPSRV_CLI_UDATA_SIZE   8192  // Preserved userdata buffer per client.
-#define _ISDITE_TCPSRV_MAX_CLI          10000 // Maximum count of active connections (and size of the connection pool).
+#define _ISDITE_TCPSRV_MAX_CLI          100   // Maximum count of active connections (and size of the connection pool).
 #define _ISDITE_TCPSRV_CBACKLOG         1024  // Connection backlog.
 #define _ISDITE_TCPSRV_KEEPALIVE              // Should we use keep alive?
+#define _ISDITE_EQUEUE_SZ                1024  // Epoll queue event buffer size.
 
 /* internal structure definition */
+
+#define _ISDITE_TCPSRV_CLI_STATE_OUT 0
+#define _ISDITE_TCPSRV_CLI_STATE_EST 1
 
 struct _isdite_fdn_tcpSrv_cliDesc /* client descriptor */
 {
@@ -66,7 +71,6 @@ struct _isdite_fdn_tcpSrv_cliDesc /* client descriptor */
 
   /* remote connection desc */
   struct sockaddr_in addrInfo;
-  int addrInfoLen;
 
 #ifdef ISIDTE_WPP
   /* worker pool preferences */
@@ -77,6 +81,9 @@ struct _isdite_fdn_tcpSrv_cliDesc /* client descriptor */
   /* statistics */
   int establishedTimestamp;
   int lastActiveTimestamp;
+
+  int packetIn;
+  int packetOut;
 
   int bytesIn;
   int bytesOut;
@@ -93,11 +100,13 @@ struct _isdite_fdn_tcpSrv_srvDesc /* server descriptor */
 
   /* client cache, !NEVER! create new connections on heap */
   struct _isdite_fdn_tcpSrv_cliDesc * clientPool;
-  struct _isdite_fdn_tcpSrv_cliDesc ** clientStack;
+  struct _isdite_fdn_tcpSrv_cliDesc * clientStack[_ISDITE_TCPSRV_MAX_CLI];
   int clientStackTop;
 
   /* net i/o worker thread */
   pthread_t workerFd;
+
+  int work;
 
 #ifdef ISDITE_NETSTAT
   /* server statistics */
@@ -135,70 +144,98 @@ static inline void _isdite_fn_tcpServer_setSocketNonBlock(int fd)
    #endif
 }
 
-void * _isdite_fn_tcpServer_netIoWorker(struct _isdite_fn_tcpServer_descriptorImpl *  desc)
+void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_srvDesc * desc)
 {
-  int idCounter = 0;
-  struct epoll_event events[1024];
-  while(1==1)
+  struct epoll_event eventBuffer[_ISDITE_EQUEUE_SZ]; // Event buffer.
+  int eventGot;
+
+  sigset_t signalMask;
+  sigemptyset(&signalMask);
+  sigaddset(&signalMask, SIGTERM);
+
+  while(desc->work == 1)
   {
-    int r = epoll_wait(desc->epollDescriptor, events, 1024, -1);
+    eventGot = epoll_pwait(desc->epollFd, eventBuffer, _ISDITE_EQUEUE_SZ, -1, &signalMask);
 
-    for(int i = 0; i < r;i++)
+    if(eventGot == -1)
+      break;
+
+    for(int i = 0; i < eventGot; i++)
     {
-      if(events[i].data.u64 == desc->acceptorSocket) // Accept new connection.
+      if(eventBuffer[i].data.u64 == desc->netSockFd) // New connection.
       {
-        while(1)
+        while(1==1)
         {
-          struct _isdite_fn_tcpServer_client * cliDesc = malloc(sizeof(struct _isdite_fn_tcpServer_client));
+          struct _isdite_fdn_tcpSrv_cliDesc * cliDesc = desc->clientStack[desc->clientStackTop];
 
-          socklen_t slt = sizeof(cliDesc->sai);
+          socklen_t sz = sizeof(cliDesc->addrInfo);
 
-          int sck =  accept(desc->acceptorSocket, (struct sockaddr*)&cliDesc->sai, &slt);
+          cliDesc->sock = accept(desc->netSockFd, (struct sockaddr*)&cliDesc->addrInfo, &sz);
 
-
-
-
-          if(sck == -1)
-          {
-            free(cliDesc);
+          if(cliDesc->sock == -1)
             break;
-          }
 
-          cliDesc->internalId = idCounter++;
-          cliDesc->status = 1;
+          _isdite_fn_tcpServer_setSocketNonBlock(cliDesc->sock);
 
-          _isdite_fn_tcpServer_setSocketNonBlock(sck);
+          cliDesc->status = _ISDITE_TCPSRV_CLI_STATE_EST;
+          cliDesc->userDataPtr = cliDesc->userData;
 
-          cliDesc->socket = sck;
+          #ifdef ISIDTE_WPP
+          cliDesc->prefWorkerThread = -1;
+          #endif
 
-          printf("Accepting connection %d\n", cliDesc->internalId);
+          #ifdef ISDITE_NETSTAT
+          cliDesc->establishedTimestamp = (int)time(NULL);
+          cliDesc->lastActiveTimestamp = cliDesc->establishedTimestamp;
+
+          cliDesc->bytesIn = 0;
+          cliDesc->bytesOut = 0;
+
+          cliDesc->packetIn = 0;
+          cliDesc->packetOut = 0;
+
+          cliDesc->fingerprintGuid = -1;
+
+          desc->connPassed++;
+          desc->connAlive++;
+          #endif
 
           struct epoll_event event;
-
           event.events = EPOLLIN |  EPOLLET;
           event.data.ptr = cliDesc;
 
-          epoll_ctl(desc->epollDescriptor, EPOLL_CTL_ADD, cliDesc->socket, &event);
+          epoll_ctl(desc->epollFd, EPOLL_CTL_ADD, cliDesc->sock, &event);
 
-
+          desc->clientStackTop--;
         }
       }
-      else // Process existing connection.
+      else // Client data.
       {
-        struct _isdite_fn_tcpServer_client * cliDesc = (struct _isdite_fn_tcpServer_client *)events[i].data.ptr;
-        printf("Received data from %d connection - %s\n", cliDesc->internalId, "derp");
+        struct _isdite_fdn_tcpSrv_cliDesc * cliDesc =
+          (struct _isdite_fdn_tcpSrv_cliDesc *)eventBuffer[i].data.ptr;
 
-        send(cliDesc->socket, mocked, strlen(mocked), 0);
-        shutdown(cliDesc->socket, 2);
-        epoll_ctl(desc->epollDescriptor, EPOLL_CTL_DEL, cliDesc->socket, NULL);
-        close(cliDesc->socket);
+        if(eventBuffer[i].events & EPOLLIN)
+        {
+          int sz = recv(cliDesc->sock, cliDesc->userDataPtr, _ISDITE_TCPSRV_CLI_UDATA_SIZE, 0);
+          ((char*)cliDesc->userDataPtr)[sz] = 0x00;
 
-        free(cliDesc);
+          printf("got client packet\n");
+          printf("%s\n", cliDesc->userDataPtr);
+        }
+        if(eventBuffer[i].events & EPOLLET)
+        {
+          shutdown(cliDesc->sock, 2);
+          epoll_ctl(desc->epollFd, EPOLL_CTL_DEL, cliDesc->sock, NULL);
+          close(cliDesc->sock);
+
+          cliDesc->status = _ISDITE_TCPSRV_CLI_STATE_OUT;
+          desc->clientStack[++desc->clientStackTop] = cliDesc;
+          desc->connAlive--;
+          printf("conclose\n");
+        }
       }
     }
-
   }
-  return NULL;
 }
 
 isdite_fn_tcp isdite_fn_tcpServer_create(int port)
@@ -215,27 +252,15 @@ isdite_fn_tcp isdite_fn_tcpServer_create(int port)
     return NULL;
   }
   #endif
-
+  printf("%d\n", sizeof*srvDesc->clientPool * _ISDITE_TCPSRV_MAX_CLI);
   srvDesc->clientPool =
-    (struct _isdite_fdn_tcpSrv_cliDesc*)
-      malloc(sizeof(struct _isdite_fdn_tcpSrv_cliDesc) * _ISDITE_TCPSRV_MAX_CLI);
+    //(struct _isdite_fdn_tcpSrv_cliDesc*)
+      malloc(sizeof *srvDesc->clientPool * _ISDITE_TCPSRV_MAX_CLI);
 
   #ifdef ISDITE_DEBUG
   if(srvDesc->clientPool == NULL)
   {
     isdite_fn_fsyslog(ISDITE_LOG_SEVERITY_ERRO, "<isdite_fn_tcpServer_create> Failed to allocate memory for client pool (%d).", errno);
-
-    goto cleanExit;
-  }
-  #endif
-
-  srvDesc->clientStack = (struct _isdite_fdn_tcpSrv_cliDesc**)
-    malloc(sizeof(struct _isdite_fdn_tcpSrv_cliDesc*) * _ISDITE_TCPSRV_MAX_CLI);
-
-  #ifdef ISDITE_DEBUG
-  if(srvDesc->clientStack == NULL)
-  {
-    isdite_fn_fsyslog(ISDITE_LOG_SEVERITY_ERRO, "<isdite_fn_tcpServer_create> Failed to allocate memory for client stack (%d).", errno);
 
     goto cleanExit;
   }
@@ -253,6 +278,8 @@ isdite_fn_tcp isdite_fn_tcpServer_create(int port)
 
   // We need to create IPv4 TCP socket so AF_INET and SOCK_STREAM.
   srvDesc->netSockFd = socket(AF_INET, SOCK_STREAM, 0);
+
+  srvDesc->work = 1;
 
   if(srvDesc->netSockFd == -1)
   {
@@ -298,6 +325,12 @@ isdite_fn_tcp isdite_fn_tcpServer_create(int port)
 
     goto errClean;
   }
+
+  struct epoll_event event;
+  event.events = EPOLLIN |  EPOLLET;
+  event.data.u64 = srvDesc->netSockFd;
+
+  epoll_ctl(srvDesc->epollFd, EPOLL_CTL_ADD, srvDesc->netSockFd, &event);
 
   // Create worker thread.
   int res = pthread_create(&srvDesc->workerFd, NULL, (void * (*)(void *))&_isdite_fn_tcpServer_netIoWorker, srvDesc);
