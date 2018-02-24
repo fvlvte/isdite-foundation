@@ -8,7 +8,7 @@ LIB_DIR='lib'
 HEADER_DIR='../source/h'
 SOURCE_DIR='../source/c'
 
-SOURCE_FILES=('app.c log.c tcp_server.c')
+SOURCE_FILES=('app.c log.c tcp_server.c ierr.c')
 
 if [ ! -d $BUILD_DIR ]; then
   mkdir $BUILD_DIR;

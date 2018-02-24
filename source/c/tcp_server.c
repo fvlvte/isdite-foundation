@@ -25,6 +25,7 @@
 
 #include "tcp_server.h"
 #include "log.h"
+#include "ierr.h"
 
 /* old - delete me plz */
 
@@ -49,7 +50,7 @@ struct _isdite_fn_tcpServer_descriptorImpl
 /* local defs cfg - plz undef at end, dont do preprocessor shitparadise */
 
 #define _ISDITE_TCPSRV_CLI_UDATA_SIZE   8192  // Preserved userdata buffer per client.
-#define _ISDITE_TCPSRV_MAX_CLI          100   // Maximum count of active connections (and size of the connection pool).
+#define _ISDITE_TCPSRV_MAX_CLI          100000// Maximum count of active connections (and size of the connection pool).
 #define _ISDITE_TCPSRV_CBACKLOG         1024  // Connection backlog.
 #define _ISDITE_TCPSRV_KEEPALIVE              // Should we use keep alive?
 #define _ISDITE_EQUEUE_SZ                1024  // Epoll queue event buffer size.
@@ -99,9 +100,12 @@ struct _isdite_fdn_tcpSrv_srvDesc /* server descriptor */
   int netSockFd;
 
   /* client cache, !NEVER! create new connections on heap */
-  struct _isdite_fdn_tcpSrv_cliDesc * clientPool;
   struct _isdite_fdn_tcpSrv_cliDesc * clientStack[_ISDITE_TCPSRV_MAX_CLI];
   int clientStackTop;
+
+  struct _isdite_fdn_tcpSrv_cliDesc clientPool[_ISDITE_TCPSRV_MAX_CLI];
+
+
 
   /* net i/o worker thread */
   pthread_t workerFd;
@@ -144,10 +148,23 @@ static inline void _isdite_fn_tcpServer_setSocketNonBlock(int fd)
    #endif
 }
 
+static inline void _isdite_fdn_tcpSrv_finalizeCon(struct _isdite_fdn_tcpSrv_srvDesc * desc, struct _isdite_fdn_tcpSrv_cliDesc * cliDesc)
+{
+  printf("CONDEAD\n");
+  shutdown(cliDesc->sock, 2);
+  epoll_ctl(desc->epollFd, EPOLL_CTL_DEL, cliDesc->sock, NULL);
+  close(cliDesc->sock);
+
+  cliDesc->status = _ISDITE_TCPSRV_CLI_STATE_OUT;
+  desc->clientStack[++desc->clientStackTop] = cliDesc;
+  desc->connAlive--;
+}
+
 void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_srvDesc * desc)
 {
   struct epoll_event eventBuffer[_ISDITE_EQUEUE_SZ]; // Event buffer.
   int eventGot;
+  int inSz;
 
   sigset_t signalMask;
   sigemptyset(&signalMask);
@@ -166,6 +183,7 @@ void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_srvDesc * desc)
       {
         while(1==1)
         {
+          printf("Accept\n");
           struct _isdite_fdn_tcpSrv_cliDesc * cliDesc = desc->clientStack[desc->clientStackTop];
 
           socklen_t sz = sizeof(cliDesc->addrInfo);
@@ -201,7 +219,7 @@ void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_srvDesc * desc)
           #endif
 
           struct epoll_event event;
-          event.events = EPOLLIN |  EPOLLET;
+          event.events = EPOLLIN;
           event.data.ptr = cliDesc;
 
           epoll_ctl(desc->epollFd, EPOLL_CTL_ADD, cliDesc->sock, &event);
@@ -214,24 +232,16 @@ void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_srvDesc * desc)
         struct _isdite_fdn_tcpSrv_cliDesc * cliDesc =
           (struct _isdite_fdn_tcpSrv_cliDesc *)eventBuffer[i].data.ptr;
 
-        if(eventBuffer[i].events & EPOLLIN)
+        inSz = recv(cliDesc->sock, cliDesc->userDataPtr, _ISDITE_TCPSRV_CLI_UDATA_SIZE, 0);
+
+        if(inSz == 0)
+          _isdite_fdn_tcpSrv_finalizeCon(desc, cliDesc);
+        else
         {
-          int sz = recv(cliDesc->sock, cliDesc->userDataPtr, _ISDITE_TCPSRV_CLI_UDATA_SIZE, 0);
-          ((char*)cliDesc->userDataPtr)[sz] = 0x00;
+          ((char*)cliDesc->userDataPtr)[inSz] = 0x00;
 
           printf("got client packet\n");
           printf("%s\n", cliDesc->userDataPtr);
-        }
-        if(eventBuffer[i].events & EPOLLET)
-        {
-          shutdown(cliDesc->sock, 2);
-          epoll_ctl(desc->epollFd, EPOLL_CTL_DEL, cliDesc->sock, NULL);
-          close(cliDesc->sock);
-
-          cliDesc->status = _ISDITE_TCPSRV_CLI_STATE_OUT;
-          desc->clientStack[++desc->clientStackTop] = cliDesc;
-          desc->connAlive--;
-          printf("conclose\n");
         }
       }
     }
@@ -240,33 +250,25 @@ void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_srvDesc * desc)
 
 isdite_fn_tcp isdite_fn_tcpServer_create(int port)
 {
+  // NOTE: Consider switching to malloc, much faster, wow. /fvlvte 22.02.18
   struct _isdite_fdn_tcpSrv_srvDesc * srvDesc =
-    (struct _isdite_fdn_tcpSrv_srvDesc *)
-      calloc(0, sizeof(struct _isdite_fdn_tcpSrv_srvDesc));
+    (struct _isdite_fdn_tcpSrv_srvDesc *)calloc(sizeof *srvDesc, 1);
 
-  #ifdef ISDITE_DEBUG
+  // We have allocated really huge block of memory, it's really worth to check.
   if(srvDesc == NULL)
   {
-    isdite_fn_fsyslog(ISDITE_LOG_SEVERITY_ERRO, "<isdite_fn_tcpServer_create> Failed to allocate memory for server descriptor (%d).", errno);
+    isdite_fdn_raiseThreadIntError(ISERR_OOM);
+    isdite_fdn_fsyslog
+    (
+      IL_ERRO,
+      "Failed to allocate memory for server descriptor (%d).",
+      errno
+    );
 
-    return NULL;
+    return NULL; // Shoop da whoop.
   }
-  #endif
-  printf("%d\n", sizeof*srvDesc->clientPool * _ISDITE_TCPSRV_MAX_CLI);
-  srvDesc->clientPool =
-    //(struct _isdite_fdn_tcpSrv_cliDesc*)
-      malloc(sizeof *srvDesc->clientPool * _ISDITE_TCPSRV_MAX_CLI);
 
-  #ifdef ISDITE_DEBUG
-  if(srvDesc->clientPool == NULL)
-  {
-    isdite_fn_fsyslog(ISDITE_LOG_SEVERITY_ERRO, "<isdite_fn_tcpServer_create> Failed to allocate memory for client pool (%d).", errno);
-
-    goto cleanExit;
-  }
-  #endif
-
-  for(int i = 0; i < _ISDITE_TCPSRV_MAX_CLI;i++)
+  for(int i = 0; i < _ISDITE_TCPSRV_MAX_CLI ;i++)
     srvDesc->clientStack[i] = &srvDesc->clientPool[i];
 
   srvDesc->clientStackTop = _ISDITE_TCPSRV_MAX_CLI - 1;
@@ -351,12 +353,6 @@ isdite_fn_tcp isdite_fn_tcpServer_create(int port)
 
   if(srvDesc->netSockFd != 0)
     close(srvDesc->netSockFd);
-
-  if(srvDesc->clientPool != NULL)
-    free(srvDesc->clientPool);
-
-  if(srvDesc->clientStack != NULL)
-    free(srvDesc->clientStack);
 
   free(srvDesc);
   srvDesc = NULL;

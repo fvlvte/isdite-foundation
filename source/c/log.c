@@ -5,6 +5,23 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdarg.h>
+#include <pthread.h>
+
+pthread_spinlock_t lock;
+
+void isdite_fdn_logInit(void)
+{
+  pthread_spin_init(&lock, PTHREAD_PROCESS_PRIVATE);
+}
+
+void isdite_fdn_logDestroy(void)
+{
+  pthread_spin_destroy(&lock);
+}
+
+static char fSyslogBuff[4096];
+static char fSyslogBuffEx[4096];
 
 // [{SPEC}\s
 // TRAC, INFO, WARN, ERRO, CRIT
@@ -56,22 +73,52 @@ void _isdite_fn_syslog_idtoa(int severity, void * dst)
   *((__m128*)dst+1) = *((__m128*)templated+1);
 }
 
-void _isdite_fn_syslog_makeLogHeader(int severity, char * data)
+void _isdite_fdn_syslog_makeLog(int severity, char * data, int ex)
 {
   char dtimeBuffer[160];
   _isdite_fn_syslog_idtoa(severity, dtimeBuffer);
 
-  write(STDOUT_FILENO, dtimeBuffer, 8 * 4 - 1);
-  write(STDOUT_FILENO, data, strlen(data));
-  write(STDOUT_FILENO, "\n", 1);
+  printf(dtimeBuffer);
+  printf(data);
+  if(ex == 0)
+    printf("\n");
 }
 
 void isdite_fn_syslog(int sev, const char * str)
 {
-  _isdite_fn_syslog_makeLogHeader(sev, (char*)str);
+  pthread_spin_lock(&lock);
+
+  _isdite_fdn_syslog_makeLog(sev, (char*)str, 0);
+
+  pthread_spin_unlock(&lock);
 }
 
 void isdite_fn_fsyslog(int sev, const char * fmt, ...)
 {
+  pthread_spin_lock(&lock);
 
+  va_list argptr;
+  va_start(argptr, fmt);
+  vsprintf(fSyslogBuff, fmt, argptr);
+  va_end(argptr);
+
+  _isdite_fdn_syslog_makeLog(sev, fSyslogBuff, 0);
+
+  pthread_spin_unlock(&lock);
+}
+
+void isdite_fdn_fsyslog(int sev, char * file, int ln, const char * fmt, ...)
+{
+  pthread_spin_lock(&lock);
+
+  va_list argptr;
+  va_start(argptr, fmt);
+  vsprintf(fSyslogBuff, fmt, argptr);
+  va_end(argptr);
+
+  sprintf(fSyslogBuffEx, "(%s @ %d) %s\n", file, ln, fSyslogBuff);
+
+  _isdite_fdn_syslog_makeLog(sev, fSyslogBuffEx, 1);
+
+  pthread_spin_unlock(&lock);
 }
