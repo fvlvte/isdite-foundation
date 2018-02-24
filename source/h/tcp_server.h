@@ -3,6 +3,6 @@
 
 typedef void* isdite_fn_tcp;
 
-isdite_fn_tcp isdite_fn_tcpServer_create(int port);
+isdite_fn_tcp isdite_fn_tcpServer_create(char * ip, int port, int maxcon);
 
 #endif
