@@ -5,11 +5,20 @@
 #define ISDITE_QTLS_INVALID_DATA -10
 #define ISDITE_QTLS_NOT_FINISHED_YET 1
 
+#include "ext/aes.h"
+
 struct isdite_fdn_qtls_context
 {
   int tlsState;
   int sockFd;
+  void * dataPtr;
   char buf[8192];
+  char cliKey[65];
+  int iFlag;
+  char shared[512];
+  void * msg_hash;
+  struct AES_ctx aesCtx;
+  unsigned long sharedSz;
   int cstData;
   int pktTop;
   int dataSz;

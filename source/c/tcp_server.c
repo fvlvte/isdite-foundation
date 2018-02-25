@@ -263,6 +263,8 @@ void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_srvDesc * desc)
 
           cliDesc->fingerprintGuid = -1;
 
+          cliDesc->ctx.dataPtr = cliDesc->ctx.buf;
+
           desc->connPassed++;
           desc->connAlive++;
           #endif
