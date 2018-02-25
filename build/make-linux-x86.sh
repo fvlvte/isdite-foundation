@@ -8,7 +8,7 @@ LIB_DIR='lib'
 HEADER_DIR='../source/h'
 SOURCE_DIR='../source/c'
 
-SOURCE_FILES=('app.c log.c tcp_server.c ierr.c')
+SOURCE_FILES=('app.c log.c tcp_server.c ierr.c qtls.c')
 
 if [ ! -d $BUILD_DIR ]; then
   mkdir $BUILD_DIR;
@@ -34,7 +34,7 @@ do
 done
 
 gcc -c -g -march=native -D ISDITE_PLATFORM=0 -lpthread \
--D ISDITE_PLATFORM_SPEC=0 -D ISDITE_DEBUG=1 -D ISDITE_NETSTAT -D ISDITE_WPP -I $HEADER_DIR $BUILD_STRING
+-D ISDITE_PLATFORM_SPEC=0 -D ISDITE_DEBUG=1 -D ISDITE_NETSTAT -D ISDITE_WPP -D TLS_AMALGAMATION -D LTM_DESC -D ISDITE_TLS -Wno-override-init -I $HEADER_DIR $BUILD_STRING
 
 ar -rcs $TARGET *.o
 rm *.o

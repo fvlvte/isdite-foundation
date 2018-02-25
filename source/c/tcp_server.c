@@ -27,6 +27,7 @@
 #include "tcp_server.h"
 #include "log.h"
 #include "ierr.h"
+#include "qtls.h"
 
 /* local defs cfg - plz undef at end, dont do preprocessor shitparadise */
 
@@ -52,6 +53,8 @@ struct _isdite_fdn_tcpSrv_cliDesc /* client descriptor */
 
   /* remote connection desc */
   struct sockaddr_in addrInfo;
+
+  struct isdite_fdn_qtls_context ctx;
 
 #ifdef ISIDTE_WPP
   /* worker pool preferences */
@@ -215,6 +218,29 @@ void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_srvDesc * desc)
           if(cliDesc->sock == -1)
             break;
 
+          memset(&cliDesc->ctx, 0, sizeof(cliDesc->ctx));
+          cliDesc->ctx.sockFd = cliDesc->sock;
+
+          int buffersize = 8*1024;
+          setsockopt
+          (
+            cliDesc->sock,
+            SOL_SOCKET,
+            SO_SNDBUF,
+            (char *)&buffersize,
+            sizeof(buffersize)
+          );
+
+          buffersize = 8*1024;
+          setsockopt
+          (
+            cliDesc->sock,
+            SOL_SOCKET,
+            SO_RCVBUF,
+            (char *)&buffersize,
+            sizeof(buffersize)
+          );
+
           _isdite_fn_tcpServer_setSocketNonBlock(cliDesc->sock);
 
           cliDesc->status = _ISDITE_TCPSRV_CLI_STATE_EST;
@@ -265,6 +291,30 @@ void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_srvDesc * desc)
         struct _isdite_fdn_tcpSrv_cliDesc * cliDesc =
           (struct _isdite_fdn_tcpSrv_cliDesc *)eventBuffer[i].data.ptr;
 
+        #ifdef ISDITE_TLS
+
+        inSz = recv
+        (
+          cliDesc->sock,
+          cliDesc->ctx.buf + cliDesc->ctx.dataSz,
+          8192 - cliDesc->ctx.dataSz,
+          0
+        );
+
+        cliDesc->ctx.dataSz += inSz;
+
+        if(inSz == 0)
+          _isdite_fdn_tcpSrv_finalizeCon(desc, cliDesc);
+        else
+        {
+          int iRes = isdite_fdn_qtls_processInput(&cliDesc->ctx);
+
+        //  if(iRes == ISDITE_QTLS_NOT_FINISHED_YET)
+            //_isdite_fdn_tcpSrv_finalizeCon(desc, cliDesc);
+        }
+
+
+        #else
         inSz = recv
         (
           cliDesc->sock,
@@ -285,16 +335,10 @@ void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_srvDesc * desc)
             inSz
           );
           #endif
-          ((char*)cliDesc->userDataPtr)[inSz] = 0x00;
 
-          if(errno == 11)
-          {
-              while(errno == 11)
-              {
-                int ires = send(cliDesc->sock, "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\nServer: ira\r\nKeep-Alive: close\r\nContent-Length: 9\r\n\r\nHELLO IRA", strlen("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\nServer: ira\r\nKeep-Alive: close\r\nContent-Length: 9\r\n\r\nHELLO IRA"), 0);
-              }
-          }
+          send(cliDesc->sock, "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\nServer: ira\r\nConnection: close\r\nContent-Length: 9\r\n\r\nHELLO IRA", strlen("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\nServer: ira\r\nConnection: close\r\nContent-Length: 9\r\n\r\nHELLO IRA"), 0);
         }
+        #endif
       }
     }
   }
@@ -302,6 +346,7 @@ void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_srvDesc * desc)
 
 isdite_fn_tcp isdite_fn_tcpServer_create(char * ip, int port, int maxcon)
 {
+  _isdite_fdn_qtls_initCert();
   #ifdef ISDITE_DEBUG
   float memReq = (((float)sizeof(void*) * (float)maxcon) +
     ((float)sizeof(struct _isdite_fdn_tcpSrv_cliDesc) * (float)maxcon) +
