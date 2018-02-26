@@ -31973,7 +31973,7 @@ static const ulong32 rcon[] = {
   Implementation of AES
 */
 
-#undef LTC_RIJNDAEL
+//#undef LTC_RIJNDAEL
 #ifdef LTC_RIJNDAEL
 
 #ifndef ENCRYPT_ONLY

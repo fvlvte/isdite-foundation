@@ -12,10 +12,21 @@ struct isdite_fdn_qtls_context
   int tlsState;
   int sockFd;
   void * dataPtr;
+  char cliRand[32];
+  char srvRand[32];
+  char keyExpansion[192];
+  char clientWriteKey[16];
+  char serverWriteKey[16];
+  char clientIv[12];
+  char serverIv[12];
+
+  void * local_ctx;
+  void * remote_ctx;
   char buf[8192];
   char cliKey[65];
   int iFlag;
-  char shared[512];
+  char shared[128];
+  char masterSecret[48];
   void * msg_hash;
   struct AES_ctx aesCtx;
   unsigned long sharedSz;

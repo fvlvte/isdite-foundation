@@ -142,6 +142,8 @@ static struct ECCCurveParameters secp256r1 = {
     "FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551"  // order (n)
 };
 
+#define DEBUG_PRINT
+
 char certBuf[4096];
 int certSz = 0;
 
@@ -154,6 +156,129 @@ int ecKeySz = 0;
 
 char eccExpKey[4096];
 long eccExpKeySz = 0;
+
+static int __private_tls_is_point(ecc_key *key) {
+    void *prime, *b, *t1, *t2;
+    int  err;
+
+    if ((err = mp_init_multi(&prime, &b, &t1, &t2, NULL)) != CRYPT_OK) {
+        return err;
+    }
+
+    /* load prime and b */
+    if ((err = mp_read_radix(prime, key->dp->prime, 16)) != CRYPT_OK) {
+        goto error;
+    }
+    if ((err = mp_read_radix(b, key->dp->B, 16)) != CRYPT_OK) {
+        goto error;
+    }
+
+    /* compute y^2 */
+    if ((err = mp_sqr(key->pubkey.y, t1)) != CRYPT_OK) {
+        goto error;
+    }
+
+    /* compute x^3 */
+    if ((err = mp_sqr(key->pubkey.x, t2)) != CRYPT_OK) {
+        goto error;
+    }
+    if ((err = mp_mod(t2, prime, t2)) != CRYPT_OK) {
+        goto error;
+    }
+    if ((err = mp_mul(key->pubkey.x, t2, t2)) != CRYPT_OK) {
+        goto error;
+    }
+
+    /* compute y^2 - x^3 */
+    if ((err = mp_sub(t1, t2, t1)) != CRYPT_OK) {
+        goto error;
+    }
+
+    /* compute y^2 - x^3 + 3x */
+    if ((err = mp_add(t1, key->pubkey.x, t1)) != CRYPT_OK) {
+        goto error;
+    }
+    if ((err = mp_add(t1, key->pubkey.x, t1)) != CRYPT_OK) {
+        goto error;
+    }
+    if ((err = mp_add(t1, key->pubkey.x, t1)) != CRYPT_OK) {
+        goto error;
+    }
+    if ((err = mp_mod(t1, prime, t1)) != CRYPT_OK) {
+        goto error;
+    }
+    while (mp_cmp_d(t1, 0) == LTC_MP_LT) {
+        if ((err = mp_add(t1, prime, t1)) != CRYPT_OK) {
+            goto error;
+        }
+    }
+    while (mp_cmp(t1, prime) != LTC_MP_LT) {
+        if ((err = mp_sub(t1, prime, t1)) != CRYPT_OK) {
+            goto error;
+        }
+    }
+
+    /* compare to b */
+    if (mp_cmp(t1, b) != LTC_MP_EQ) {
+        err = CRYPT_INVALID_PACKET;
+    } else {
+        err = CRYPT_OK;
+    }
+
+error:
+    mp_clear_multi(prime, b, t1, t2, NULL);
+    return err;
+}
+
+int __private_tls_ecc_import_key(const unsigned char *private_key, int private_len, const unsigned char *public_key, int public_len, ecc_key *key, const ltc_ecc_set_type *dp) {
+    int           err;
+
+    if ((!key) || (!ltc_mp.name))
+        return CRYPT_MEM;
+
+    key->type = PK_PRIVATE;
+
+    if (mp_init_multi(&key->pubkey.x, &key->pubkey.y, &key->pubkey.z, &key->k, NULL) != CRYPT_OK)
+        return CRYPT_MEM;
+
+    if ((public_len) && (!public_key[0])) {
+        public_key++;
+        public_len--;
+    }
+    if ((err = mp_read_unsigned_bin(key->pubkey.x, (unsigned char *)public_key + 1, (public_len - 1) >> 1)) != CRYPT_OK) {
+        mp_clear_multi(key->pubkey.x, key->pubkey.y, key->pubkey.z, key->k, NULL);
+        return err;
+    }
+
+    if ((err = mp_read_unsigned_bin(key->pubkey.y, (unsigned char *)public_key + 1 + ((public_len - 1) >> 1), (public_len - 1) >> 1)) != CRYPT_OK) {
+        mp_clear_multi(key->pubkey.x, key->pubkey.y, key->pubkey.z, key->k, NULL);
+        return err;
+    }
+
+    if ((err = mp_read_unsigned_bin(key->k, (unsigned char *)private_key, private_len)) != CRYPT_OK) {
+        mp_clear_multi(key->pubkey.x, key->pubkey.y, key->pubkey.z, key->k, NULL);
+        return err;
+    }
+
+    key->idx = -1;
+    key->dp  = dp;
+
+    /* set z */
+    if ((err = mp_set(key->pubkey.z, 1)) != CRYPT_OK) {
+        mp_clear_multi(key->pubkey.x, key->pubkey.y, key->pubkey.z, key->k, NULL);
+        return err;
+    }
+
+    /* is it a point on the curve?  */
+    if ((err = __private_tls_is_point(key)) != CRYPT_OK) {
+        DEBUG_PRINT("KEY IS NOT ON CURVE\n");
+        mp_clear_multi(key->pubkey.x, key->pubkey.y, key->pubkey.z, key->k, NULL);
+        return err;
+    }
+
+    /* we're good */
+    return CRYPT_OK;
+}
 
 void _isdite_fdn_qtls_initCert()
 {
@@ -189,16 +314,19 @@ void _isdite_fdn_qtls_initCert()
   prng_idx = register_prng(&sprng_desc);
   hash_idx = register_hash(&sha512_desc);
   hash_idx256 = register_hash(&sha256_desc);
+  register_cipher(&aes_desc);
 
-  void *Yc = NULL;
-  ltc_mp.init(&Yc);
+  void *prime, *b, *t1, *t2;
+  mp_init_multi(&prime, &b, &t1, &t2, NULL);
+  //void *Yc = NULL;
+//  ltc_mp.init(&Yc);
   ecc_make_key_ex(NULL, find_prng("sprng"), &ek, &secp256r1.dp);
-  ltc_mp.deinit(Yc);
+//  ltc_mp.deinit(Yc);
 
   eccExpKeySz = 4096;
   ecc_ansi_x963_export(&ek, eccExpKey, &eccExpKeySz);
 
-  //printf("%d\n", eccExpKeySz);
+  printf("%d\n", eccExpKeySz);
 
 	int err = rsa_import(privKey, keySz, &key);
 }
@@ -242,7 +370,7 @@ static inline int _isdite_fdn_qtls_handler_preHello(struct isdite_fdn_qtls_conte
   shello.len = htons(sizeof(shello) - 5 - 4);
   shello.ver = 0x0303;
   shello.sidLen = 0;
-  shello.cipherSuite = 0x13c0; //
+  shello.cipherSuite = 0x2fc0; //
   shello.comprMeth = 0;
 
   for(int i = 0; i < 32;i++)
@@ -290,6 +418,9 @@ static inline int _isdite_fdn_qtls_handler_preHello(struct isdite_fdn_qtls_conte
   memcpy(toCrypt, ((struct _isdite_fdn_qtls_clientHello*)((((char*)(struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr))+ 5))->random, 32);
   memcpy(toCrypt+32, shello.random, 32);
   memcpy(toCrypt+64, ptr, 69); // -sig
+
+  memcpy(ctx->cliRand, ((struct _isdite_fdn_qtls_clientHello*)((((char*)(struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr))+ 5))->random, 32);
+  memcpy(ctx->srvRand, shello.random, 32);
 
   int toSignLen = 64 + 69;
   _isdite_fdn_qtls_signSha512RSA(toCrypt, toSignLen, kxchg.sig);
@@ -417,19 +548,44 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
 
   if(*(((uint8_t*)(ctx->dataPtr))+5) == 16)
   {
+    printf("Client key exchange\n");
+
     void * ptr = (void*)(((uint8_t*)(ctx->dataPtr))+10);
     memcpy(ctx->cliKey, ptr, 65);
 
-    ecc_key remoteKey;
-    ecc_import_ex(ctx->cliKey, 65, &remoteKey, &secp256r1.dp);
-    unsigned long outSz = 512;
-    ecc_shared_secret(&ek, &remoteKey, ctx->shared, &ctx->sharedSz);
+    for(int i = 0; i < 65; i++)
+    {
+      printf("%x ", (uint8_t)ctx->cliKey[i]);
+    }
 
-    AES_init_ctx(&ctx->aesCtx, ctx->shared);
+    printf("\n");
+
+    ecc_key remoteKey;
+    memset(&remoteKey, 0, sizeof(ecc_key));
+    int iRes = __private_tls_ecc_import_key(ek.k, 256, ctx->cliKey, 65, &remoteKey, &secp256r1.dp);
+
+      printf("%s\n", ek.dp->name);
+        printf("%d\n", iRes);
+
+    unsigned long outSz = 128;
+    iRes = ecc_shared_secret(&ek, &remoteKey, ctx->shared, &outSz);
+      printf("%d\n", iRes);
+
+    __private_tls_prf(ctx->masterSecret, 48, ctx->shared, outSz, "master secret", strlen("master secret"), ctx->cliRand, 32, ctx->srvRand, 32);
+    __private_tls_prf(ctx->keyExpansion, 192, ctx->masterSecret, 48, "key expansion", strlen("key expansion"), ctx->srvRand, 32, ctx->cliRand, 32);
+
+    memcpy(ctx->clientWriteKey, ctx->keyExpansion, 16);
+    memcpy(ctx->serverWriteKey, ctx->keyExpansion+16, 16);
+    memcpy(ctx->clientIv, ctx->keyExpansion+32, 12);
+    memcpy(ctx->serverIv, ctx->keyExpansion+36, 12);
+
+    ctx->local_ctx = malloc(sizeof(gcm_state));
+    ctx->remote_ctx = malloc(sizeof(gcm_state));
+
+    gcm_init((gcm_state*)ctx->local_ctx, find_cipher("aes"), ctx->serverWriteKey, 16);
+    gcm_init((gcm_state*)ctx->remote_ctx, find_cipher("aes"), ctx->clientWriteKey, 16);
 
     hash_desc256->process((hash_state*)ctx->msg_hash, ptr - 5, ntohs(((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->length));
-
-    printf("Client key exchange\n");
 
     ctx->iFlag |= _ISDITE_QTLS_GOT_KEY;
   }
@@ -443,8 +599,33 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
   else
   {
     printf("Encrypted hs message\n");
-    AES_CBC_decrypt_buffer(&ctx->aesCtx, ((char*)ctx->dataPtr) + 5, ntohs(((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->length));
-    hash_desc256->process((hash_state*)ctx->msg_hash, ((char*)ctx->dataPtr) + 5, ntohs(((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->length));
+
+    char aad[13];
+    memset(aad, 0, 13);
+    aad[8] = 22;
+    aad[9] = 3;
+    aad[10] = 3;
+    aad[11] = 0;
+    aad[12] = 16;
+
+    char ptBuf[32];
+    char macTag[32];
+    gcm_reset((gcm_state*)ctx->remote_ctx);
+    gcm_add_iv((gcm_state*)ctx->remote_ctx, ctx->clientIv, 12);
+    gcm_add_aad((gcm_state*)ctx->remote_ctx, aad, 13);
+    gcm_process((gcm_state*)ctx->remote_ctx, ptBuf, 32, ctx->dataPtr + 5 + 8, GCM_DECRYPT);
+    unsigned long taglen = 32;
+    gcm_done((gcm_state*)ctx->remote_ctx, macTag, &taglen);
+
+    for(int i = 0; i < 32; i++)
+    {
+      printf("%x ", (uint8_t)ptBuf[i]);
+    }
+
+    printf("\n");
+
+
+    hash_desc256->process((hash_state*)ctx->msg_hash, ptBuf, 16);
 
     struct _isdite_fdn_qtls_changeCipherSpec ccs;
     ccs.identMagic = 20;
@@ -461,15 +642,15 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
     char hash[32];
     hash_desc256->done((hash_state*)ctx->msg_hash, hash);
 
-    uint8_t data[] = {0x14, 0x00, 0x00, 0x0C};
-    memcpy(fin.data, data, 4);
+    //uint8_t data[] = {0x14, 0x00, 0x00, 0x0C};
+  //  memcpy(fin.data, data, 4);
 
-    __private_tls_prf(fin.data+4, 12, ctx->shared, ctx->sharedSz, "server finished", strlen("server finished"), hash, 32, NULL, 0);
+  //  __private_tls_prf(fin.data+4, 12, ctx->shared, ctx->sharedSz, "server finished", strlen("server finished"), hash, 32, NULL, 0);
   //  memcpy(fin.data+16, hash, 32);
 
-    AES_CBC_encrypt_buffer(&ctx->aesCtx, fin.data, 64);
+  //  AES_CBC_encrypt_buffer(&ctx->aesCtx, fin.data, 64);
 
-    send(ctx->sockFd, &fin, sizeof(fin), 0);
+    //send(ctx->sockFd, &fin, sizeof(fin), 0);
 
     ctx->tlsState = _ISDITR_QTLS_ST_DATA_READY;
   }
