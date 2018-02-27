@@ -569,7 +569,7 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
 
     unsigned long outSz = 128;
     iRes = ecc_shared_secret(&ek, &remoteKey, ctx->shared, &outSz);
-      printf("%d\n", iRes);
+      printf("%d\n", outSz);
 
     __private_tls_prf(ctx->masterSecret, 48, ctx->shared, outSz, "master secret", strlen("master secret"), ctx->cliRand, 32, ctx->srvRand, 32);
     __private_tls_prf(ctx->keyExpansion, 192, ctx->masterSecret, 48, "key expansion", strlen("key expansion"), ctx->srvRand, 32, ctx->cliRand, 32);
@@ -611,13 +611,14 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
     char ptBuf[32];
     char macTag[32];
     gcm_reset((gcm_state*)ctx->remote_ctx);
+    memset(ctx->clientIv+4, 0, 8);
     gcm_add_iv((gcm_state*)ctx->remote_ctx, ctx->clientIv, 12);
     gcm_add_aad((gcm_state*)ctx->remote_ctx, aad, 13);
-    gcm_process((gcm_state*)ctx->remote_ctx, ptBuf, 32, ctx->dataPtr + 5 + 8, GCM_DECRYPT);
+    gcm_process((gcm_state*)ctx->remote_ctx, ptBuf, 16, ctx->dataPtr + 5 + 8, GCM_DECRYPT);
     unsigned long taglen = 32;
-    gcm_done((gcm_state*)ctx->remote_ctx, macTag, &taglen);
+    gcm_done((gcm_state*)ctx->local_ctx, macTag, &taglen);
 
-    for(int i = 0; i < 32; i++)
+    for(int i = 0; i < 12; i++)
     {
       printf("%x ", (uint8_t)ptBuf[i]);
     }
