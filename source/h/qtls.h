@@ -4,6 +4,7 @@
 #define ISDITE_QTLS_INSUFFICIENT_DATA -9
 #define ISDITE_QTLS_INVALID_DATA -10
 #define ISDITE_QTLS_NOT_FINISHED_YET 1
+#define ISDITE_QTLS_DATA_READY 0
 
 #include "ext/aes.h"
 
@@ -33,10 +34,14 @@ struct isdite_fdn_qtls_context
   int cstData;
   int pktTop;
   int dataSz;
+  int nonce;
+  char conDataBuffer[4096];
+  int conDataSz;
 };
 
 void _isdite_fdn_qtls_initCert();
 int isdite_fdn_qtls_processInput(struct isdite_fdn_qtls_context * ctx);
+void isdite_fdn_qtls_sendData(struct isdite_fdn_qtls_context * ctx, void * data, int dataSz);
 
 int isdite_fdn_qtls_recv(struct isdite_fdn_qtls_context * ctx, void * buffer, int sz);
 int isdite_fdn_qtls_send(struct isdite_fdn_qtls_context * ctx, void * data, int sz);

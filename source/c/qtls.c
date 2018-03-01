@@ -1,5 +1,6 @@
 #include "qtls.h"
 #include "def.h"
+#include "log.h"
 
 #include <stdint.h>
 #include <unistd.h>
@@ -83,7 +84,7 @@ struct _isdite_fdn_qtls_serverFinished
   uint8_t identMagic; // 20
   uint16_t version;
   uint16_t len; // 1
-  uint8_t data[64]; // 1
+  uint8_t data[40]; // 1
 } ISDITE_PACKED;
 
 struct _isdite_fdn_qtls_serverKeyExchange
@@ -326,8 +327,6 @@ void _isdite_fdn_qtls_initCert()
   eccExpKeySz = 4096;
   ecc_ansi_x963_export(&ek, eccExpKey, &eccExpKeySz);
 
-  printf("%d\n", eccExpKeySz);
-
 	int err = rsa_import(privKey, keySz, &key);
 }
 
@@ -355,9 +354,10 @@ static inline int _isdite_fdn_qtls_handler_preHello(struct isdite_fdn_qtls_conte
 	hash_desc256->init((hash_state*)ctx->msg_hash);
 	hash_desc256->process((hash_state*)ctx->msg_hash, (const unsigned char*)ctx->dataPtr+5, ntohs(((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->length));
 
-  printf("pID %d nT %d\n", ntohs(((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->length), (int)((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->type);
   if((int)((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->type != 22)
     return ISDITE_QTLS_INVALID_DATA;
+
+  ctx->nonce = 1;
 
   struct _isdite_fdn_qtls_serverHello shello;
 
@@ -376,7 +376,7 @@ static inline int _isdite_fdn_qtls_handler_preHello(struct isdite_fdn_qtls_conte
   for(int i = 0; i < 32;i++)
     shello.random[i] = i * 13 + i;
 
-  hash_desc256->process((hash_state*)ctx->msg_hash, ((const unsigned char*)&shello)+sizeof(shello.rlh), sizeof(shello) - sizeof(shello.rlh));
+  hash_desc256->process((hash_state*)ctx->msg_hash, ((const unsigned char*)&shello)+5, sizeof(shello) - 5);
 
   send(ctx->sockFd, &shello, sizeof(shello), 0);
 
@@ -396,8 +396,7 @@ static inline int _isdite_fdn_qtls_handler_preHello(struct isdite_fdn_qtls_conte
   memcpy(fbaCert+sizeof(cert), certBuf, certSz);
   send(ctx->sockFd, fbaCert, sizeof(cert) + certSz, 0);
 
-  hash_desc256->process((hash_state*)ctx->msg_hash, ((const unsigned char*)&cert), sizeof(cert));
-  hash_desc256->process((hash_state*)ctx->msg_hash, ((const unsigned char*)certBuf), certSz);
+  hash_desc256->process((hash_state*)ctx->msg_hash, ((const unsigned char*)fbaCert), sizeof(cert) + certSz);
 
   //
   struct _isdite_fdn_qtls_serverKeyExchange kxchg;
@@ -541,43 +540,33 @@ void __private_tls_prf(
 
 static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_context * ctx, int rs)
 {
-  printf("pID %d nT %d\n", ntohs(((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->length), (int)((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->type);
-
   if((int)((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->type != 22 && (int)((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->type != 20)
     return ISDITE_QTLS_INVALID_DATA;
 
-  if(*(((uint8_t*)(ctx->dataPtr))+5) == 16)
+  if(*(((uint8_t*)(ctx->dataPtr))+5) == 16 && (int)((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->type == 22)
   {
-    printf("Client key exchange\n");
+    hash_desc256->process((hash_state*)ctx->msg_hash, ((char*)ctx->dataPtr) + 5, ntohs(((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->length));
+
+    isdite_fdn_fsyslog(IL_TRAC, "QTLS TLS 1.2: Received 'Client Key Exchange' packet.");
 
     void * ptr = (void*)(((uint8_t*)(ctx->dataPtr))+10);
     memcpy(ctx->cliKey, ptr, 65);
 
-    for(int i = 0; i < 65; i++)
-    {
-      printf("%x ", (uint8_t)ctx->cliKey[i]);
-    }
-
-    printf("\n");
-
     ecc_key remoteKey;
     memset(&remoteKey, 0, sizeof(ecc_key));
-    int iRes = __private_tls_ecc_import_key(ek.k, 256, ctx->cliKey, 65, &remoteKey, &secp256r1.dp);
 
-      printf("%s\n", ek.dp->name);
-        printf("%d\n", iRes);
+    int iRes = __private_tls_ecc_import_key(ek.k, 256, ctx->cliKey, 65, &remoteKey, &secp256r1.dp);
 
     unsigned long outSz = 128;
     iRes = ecc_shared_secret(&ek, &remoteKey, ctx->shared, &outSz);
-      printf("%d\n", outSz);
 
-    __private_tls_prf(ctx->masterSecret, 48, ctx->shared, outSz, "master secret", strlen("master secret"), ctx->cliRand, 32, ctx->srvRand, 32);
-    __private_tls_prf(ctx->keyExpansion, 192, ctx->masterSecret, 48, "key expansion", strlen("key expansion"), ctx->srvRand, 32, ctx->cliRand, 32);
+    __private_tls_prf(ctx->masterSecret, 48, ctx->shared, outSz, "master secret", 13, ctx->cliRand, 32, ctx->srvRand, 32);
+    __private_tls_prf(ctx->keyExpansion, 40, ctx->masterSecret, 48, "key expansion", 13, ctx->srvRand, 32, ctx->cliRand, 32);
 
     memcpy(ctx->clientWriteKey, ctx->keyExpansion, 16);
     memcpy(ctx->serverWriteKey, ctx->keyExpansion+16, 16);
-    memcpy(ctx->clientIv, ctx->keyExpansion+32, 12);
-    memcpy(ctx->serverIv, ctx->keyExpansion+36, 12);
+    memcpy(ctx->clientIv, ctx->keyExpansion+32, 4);
+    memcpy(ctx->serverIv, ctx->keyExpansion+36, 4);
 
     ctx->local_ctx = malloc(sizeof(gcm_state));
     ctx->remote_ctx = malloc(sizeof(gcm_state));
@@ -585,20 +574,19 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
     gcm_init((gcm_state*)ctx->local_ctx, find_cipher("aes"), ctx->serverWriteKey, 16);
     gcm_init((gcm_state*)ctx->remote_ctx, find_cipher("aes"), ctx->clientWriteKey, 16);
 
-    hash_desc256->process((hash_state*)ctx->msg_hash, ptr - 5, ntohs(((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->length));
-
     ctx->iFlag |= _ISDITE_QTLS_GOT_KEY;
   }
-  else if((int)((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->type == 20)
+  else if((int)((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->type == 20 && ctx->iFlag & _ISDITE_QTLS_GOT_KEY)
   {
-    printf("Change cipher spec\n");
+    isdite_fdn_fsyslog(IL_TRAC, "QTLS TLS 1.2: Received 'Change Cipher Spec'.");
 
-    hash_desc256->process((hash_state*)ctx->msg_hash, ((char*)ctx->dataPtr) + 5, ntohs(((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->length));
+    // Add packet to final handshake hash.
+
     ctx->iFlag |= _ISDITE_QTLS_CIPHER_SPEC;
   }
   else
   {
-    printf("Encrypted hs message\n");
+    isdite_fdn_fsyslog(IL_TRAC, "QTLS TLS 1.2: Received 'Client Finished' packet.");
 
     char aad[13];
     memset(aad, 0, 13);
@@ -615,16 +603,8 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
     gcm_add_iv((gcm_state*)ctx->remote_ctx, ctx->clientIv, 12);
     gcm_add_aad((gcm_state*)ctx->remote_ctx, aad, 13);
     gcm_process((gcm_state*)ctx->remote_ctx, ptBuf, 16, ctx->dataPtr + 5 + 8, GCM_DECRYPT);
-    unsigned long taglen = 32;
+    unsigned long taglen = 16;
     gcm_done((gcm_state*)ctx->local_ctx, macTag, &taglen);
-
-    for(int i = 0; i < 12; i++)
-    {
-      printf("%x ", (uint8_t)ptBuf[i]);
-    }
-
-    printf("\n");
-
 
     hash_desc256->process((hash_state*)ctx->msg_hash, ptBuf, 16);
 
@@ -635,23 +615,46 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
     ccs.data = 1;
     send(ctx->sockFd, &ccs, sizeof(ccs), 0);
 
-    struct _isdite_fdn_qtls_serverFinished fin;
-    fin.identMagic = 22;
-    fin.version = 0x0303;
-    fin.len = htons(64);
-
     char hash[32];
     hash_desc256->done((hash_state*)ctx->msg_hash, hash);
 
-    //uint8_t data[] = {0x14, 0x00, 0x00, 0x0C};
-  //  memcpy(fin.data, data, 4);
 
-  //  __private_tls_prf(fin.data+4, 12, ctx->shared, ctx->sharedSz, "server finished", strlen("server finished"), hash, 32, NULL, 0);
-  //  memcpy(fin.data+16, hash, 32);
+    uint8_t rdata[40];
+    memset(rdata, 0, 8);
+    uint8_t data[] = {0x14, 0x00, 0x00, 0x0C};
+    memcpy(rdata+8, data, 4);
+    __private_tls_prf(rdata+12, 12, ctx->masterSecret, 48, "server finished", strlen("server finished"), hash, 32, NULL, 0);
 
-  //  AES_CBC_encrypt_buffer(&ctx->aesCtx, fin.data, 64);
+    uint8_t encRes[16];
 
-    //send(ctx->sockFd, &fin, sizeof(fin), 0);
+    char aad2[13];
+    memset(aad2, 0, 13);
+    aad2[8] = 22;
+    aad2[9] = 3;
+    aad2[10] = 3;
+    aad2[11] = 0;
+    aad2[12] = 16;
+
+    memset(ctx->serverIv+4, 0, 8);
+    gcm_reset((gcm_state*)ctx->local_ctx);
+    gcm_add_iv((gcm_state*)ctx->local_ctx, ctx->serverIv, 12);
+    gcm_add_aad((gcm_state*)ctx->local_ctx, aad2, 13);
+    gcm_process((gcm_state*)ctx->local_ctx, rdata+8, 16, encRes, GCM_ENCRYPT);
+
+    memcpy(rdata+8, encRes, 16);
+
+    taglen = 16;
+    gcm_done((gcm_state*)ctx->local_ctx, rdata+24, &taglen);
+
+
+    struct _isdite_fdn_qtls_serverFinished fin;
+
+    fin.identMagic = 22;
+    fin.version = 0x0303;
+    fin.len = htons(40);
+    memcpy(fin.data, rdata, 40);
+
+    send(ctx->sockFd, &fin, sizeof(fin), 0);
 
     ctx->tlsState = _ISDITR_QTLS_ST_DATA_READY;
   }
@@ -661,17 +664,80 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
 
 static inline int _isdite_fdn_qtls_handler_apdata(struct isdite_fdn_qtls_context * ctx, int rs)
 {
-  //uint8_t * realData = ctx->dataPtr + 11;
 
-//  int rrs = rs - 11;
-  //realData[rrs] = 0x00;
+  uint8_t * realData = ctx->dataPtr;
 
+  if(*realData == 21)
+  {
+    isdite_fdn_fsyslog(IL_TRAC, "QTLS TLS 1.2: Received network alert.");
 
-  //AES_CBC_decrypt_buffer(&ctx->aesCtx, realData, rrs);
-//
-  //printf(realData);
+    return ISDITE_QTLS_INSUFFICIENT_DATA;
+  }
+  else
+  {
+    isdite_fdn_fsyslog(IL_TRAC, "QTLS TLS 1.2: Received 'Application Data' packet.");
+
+    char aad[13];
+    memset(aad, 0, 13);
+    aad[8] = 22;
+    aad[9] = 3;
+    aad[10] = 3;
+    aad[11] = 0;
+    aad[12] = 16;
+
+    int ptextSz = ntohs(((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->length) - 24;
+
+    ctx->conDataSz = ptextSz;
+
+    char ptBuf[4096];
+    char macTag[32];
+    gcm_reset((gcm_state*)ctx->remote_ctx);
+    memcpy(ctx->clientIv+4, realData+5, 8);
+    memcpy(aad, realData+5, 8);
+    gcm_add_iv((gcm_state*)ctx->remote_ctx, ctx->clientIv, 12);
+    gcm_add_aad((gcm_state*)ctx->remote_ctx, aad, 13);
+    gcm_process((gcm_state*)ctx->remote_ctx, ctx->conDataBuffer, ptextSz, ctx->dataPtr + 5 + 8, GCM_DECRYPT);
+    unsigned long taglen = 16;
+    gcm_done((gcm_state*)ctx->local_ctx, macTag, &taglen);
+
+    return ISDITE_QTLS_DATA_READY;
+  }
 
   return ISDITE_QTLS_INSUFFICIENT_DATA;
+}
+
+void isdite_fdn_qtls_sendData(struct isdite_fdn_qtls_context * ctx, void * data, int dataSz)
+{
+  isdite_fdn_fsyslog(IL_TRAC, "QTLS TLS 1.2: Sending response.");
+  uint8_t outputBuffer[4096];
+
+  outputBuffer[0] = 23;
+  outputBuffer[1] = 3;
+  outputBuffer[2] = 3;
+  outputBuffer[3] = 0;
+  outputBuffer[4] = 24 + dataSz;
+
+  *((uint32_t*)(outputBuffer+5)) = 0;
+  *((uint32_t*)(outputBuffer+5 + 4)) = htonl(ctx->nonce);
+
+  uint8_t aad[13];
+  memset(aad, 0, 13);
+  aad[7] = ctx->nonce++;
+  aad[8] = 23;
+  aad[9] = 3;
+  aad[10] = 3;
+  aad[12] = dataSz;
+
+  memcpy(ctx->serverIv+4, aad, 8);
+  gcm_reset((gcm_state*)ctx->local_ctx);
+  gcm_add_iv((gcm_state*)ctx->local_ctx, ctx->serverIv, 12);
+  gcm_add_aad((gcm_state*)ctx->local_ctx, aad, 13);
+  gcm_process((gcm_state*)ctx->local_ctx, data, dataSz, outputBuffer + 5 + 8, GCM_ENCRYPT);
+
+  unsigned long taglen = 16;
+  gcm_done((gcm_state*)ctx->local_ctx, outputBuffer + 5 + 8 + dataSz, &taglen);
+
+  send(ctx->sockFd, outputBuffer, 5 + 24 + dataSz, 0);
 }
 
 
@@ -683,14 +749,12 @@ static inline int _isdite_fdn_qtls_isPacketComplete(struct isdite_fdn_qtls_conte
 int isdite_fdn_qtls_processInput(struct isdite_fdn_qtls_context * ctx)
 {
   int realDataSz = ctx->dataSz - ctx->pktTop;
-  printf("rds %d\n", realDataSz);
   if
   (
     realDataSz < sizeof(struct _isdite_fdn_qtls_tlsRecordLayerHeader) ||
     !_isdite_fdn_qtls_isPacketComplete(ctx, realDataSz)
   )
   {
-    printf("insufficient\n");
     return ISDITE_QTLS_INSUFFICIENT_DATA;
   }
 
@@ -720,11 +784,8 @@ int isdite_fdn_qtls_processInput(struct isdite_fdn_qtls_context * ctx)
   }
 
   int procDataSz = ntohs(((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->length) + 5;
-  printf("pds %d\n", procDataSz);
-
   if(realDataSz == procDataSz)
   {
-    printf("clear\n");
     ctx->dataPtr = ctx->buf;
     ctx->pktTop = 0;
     ctx->dataSz = 0;

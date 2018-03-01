@@ -311,6 +311,14 @@ void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_srvDesc * desc)
         {
           int iRes = isdite_fdn_qtls_processInput(&cliDesc->ctx);
 
+          if(iRes == ISDITE_QTLS_DATA_READY)
+          {
+            cliDesc->ctx.conDataBuffer[cliDesc->ctx.conDataSz] = 0;
+            printf(cliDesc->ctx.conDataBuffer);
+
+            isdite_fdn_qtls_sendData(&cliDesc->ctx, "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\nServer: ira\r\nConnection: close\r\nContent-Length: 9\r\n\r\nHELLO IRA", strlen("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\nServer: ira\r\nConnection: close\r\nContent-Length: 9\r\n\r\nHELLO IRA"));
+          }
+
         //  if(iRes == ISDITE_QTLS_NOT_FINISHED_YET)
             //_isdite_fdn_tcpSrv_finalizeCon(desc, cliDesc);
         }
