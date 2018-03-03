@@ -9,8 +9,10 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <string.h>
+
 #include "ext/tomcrypt.c"
 
+extern void _isdite_tcpServer_sendPacketDropOnError(void *, void *, void *, int);
 
 #define _ISDITE_QTLS_PREHELLO 0
 #define _ISDITE_QTLS_ST_SHELLODONE 1
@@ -48,23 +50,15 @@ struct _isdite_fdn_qtls_clientHello
 
 struct _isdite_fdn_qtls_serverHello
 {
-  struct _isdite_fdn_qtls_tlsRecordLayerHeader rlh;
-  uint8_t identMagic; // 2
-  uint8_t align;
-  uint16_t len;
   uint16_t ver;
   uint8_t random[32];
-  uint8_t sidLen; // 0
-//  uint8_t siz[32];
+  uint8_t sidLen;
   uint16_t cipherSuite;
   uint8_t comprMeth;
 } ISDITE_PACKED;
 
 struct _isdite_fdn_qtls_certificate
 {
-  uint8_t identMagic; // 2
-  uint8_t align;
-  uint16_t len;
   uint8_t align2;
   uint16_t certsLen;
   uint8_t align3;
@@ -142,8 +136,6 @@ static struct ECCCurveParameters secp256r1 = {
     "4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5", // Gy
     "FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551"  // order (n)
 };
-
-#define DEBUG_PRINT
 
 char certBuf[4096];
 int certSz = 0;
@@ -272,7 +264,6 @@ int __private_tls_ecc_import_key(const unsigned char *private_key, int private_l
 
     /* is it a point on the curve?  */
     if ((err = __private_tls_is_point(key)) != CRYPT_OK) {
-        DEBUG_PRINT("KEY IS NOT ON CURVE\n");
         mp_clear_multi(key->pubkey.x, key->pubkey.y, key->pubkey.z, key->k, NULL);
         return err;
     }
@@ -283,6 +274,7 @@ int __private_tls_ecc_import_key(const unsigned char *private_key, int private_l
 
 void _isdite_fdn_qtls_initCert()
 {
+  printf("HS SIZE %d\n", sizeof(gcm_state));
   FILE * h = fopen("cert.bin", "rb");
   if(h == NULL)
   {
@@ -319,10 +311,8 @@ void _isdite_fdn_qtls_initCert()
 
   void *prime, *b, *t1, *t2;
   mp_init_multi(&prime, &b, &t1, &t2, NULL);
-  //void *Yc = NULL;
-//  ltc_mp.init(&Yc);
+
   ecc_make_key_ex(NULL, find_prng("sprng"), &ek, &secp256r1.dp);
-//  ltc_mp.deinit(Yc);
 
   eccExpKeySz = 4096;
   ecc_ansi_x963_export(&ek, eccExpKey, &eccExpKeySz);
@@ -345,101 +335,6 @@ static inline void _isdite_fdn_qtls_signSha512RSA(void * toCrypt, int toSignLen,
 	// Sign hash.
 	unsigned long siglen = 512;
 	rsa_sign_hash_ex(hash, hash_desc->hashsize, signature, &siglen, padding, NULL, prng_idx, hash_idx, saltlen, &key);
-}
-
-static inline int _isdite_fdn_qtls_handler_preHello(struct isdite_fdn_qtls_context * ctx, int rs)
-{
-
-  ctx->msg_hash = malloc(sizeof(hash_state));
-	hash_desc256->init((hash_state*)ctx->msg_hash);
-	hash_desc256->process((hash_state*)ctx->msg_hash, (const unsigned char*)ctx->dataPtr+5, ntohs(((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->length));
-
-  if((int)((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->type != 22)
-    return ISDITE_QTLS_INVALID_DATA;
-
-  ctx->nonce = 1;
-
-  struct _isdite_fdn_qtls_serverHello shello;
-
-  shello.rlh.type = 22; // handshake
-  shello.rlh.version = 0x0303;
-  shello.rlh.length = htons(sizeof(shello) - 5 + sizeof(struct _isdite_fdn_qtls_certificate) + certSz + sizeof(struct _isdite_fdn_qtls_serverKeyExchange) + sizeof(struct _isdite_fdn_qtls_serverHelloDone));
-
-  shello.identMagic = 2; // server hello
-  shello.align = 0;
-  shello.len = htons(sizeof(shello) - 5 - 4);
-  shello.ver = 0x0303;
-  shello.sidLen = 0;
-  shello.cipherSuite = 0x2fc0; //
-  shello.comprMeth = 0;
-
-  for(int i = 0; i < 32;i++)
-    shello.random[i] = i * 13 + i;
-
-  hash_desc256->process((hash_state*)ctx->msg_hash, ((const unsigned char*)&shello)+5, sizeof(shello) - 5);
-
-  send(ctx->sockFd, &shello, sizeof(shello), 0);
-
-  struct _isdite_fdn_qtls_certificate cert;
-
-  cert.identMagic = 11;//cert
-  cert.align = 0;
-  cert.len = htons(sizeof(cert) + certSz - 4);
-  cert.align2 = 0;
-  cert.certsLen = htons(certSz + 3) ;
-  cert.align3 = 0;
-  cert.certLen = htons(certSz);
-
-  char fbaCert[4096];
-
-  memcpy(fbaCert, &cert, sizeof(cert));
-  memcpy(fbaCert+sizeof(cert), certBuf, certSz);
-  send(ctx->sockFd, fbaCert, sizeof(cert) + certSz, 0);
-
-  hash_desc256->process((hash_state*)ctx->msg_hash, ((const unsigned char*)fbaCert), sizeof(cert) + certSz);
-
-  //
-  struct _isdite_fdn_qtls_serverKeyExchange kxchg;
-  kxchg.identMagic = 12;
-  kxchg.align = 0;
-  kxchg.len = htons(sizeof(kxchg) - 4);
-  kxchg.curveType = 3;
-  kxchg.curveAlg = 0x1700;
-  kxchg.pubKeyLen = eccExpKeySz;
-  memcpy(kxchg.pubKey, eccExpKey, eccExpKeySz);
-  kxchg.sigAlg = 0x0106;
-  kxchg.sigLen = htons(512);
-
-  unsigned char * ptr = (unsigned char*)&kxchg;
-  ptr += 4;
-
-  char toCrypt[1024];
-  memcpy(toCrypt, ((struct _isdite_fdn_qtls_clientHello*)((((char*)(struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr))+ 5))->random, 32);
-  memcpy(toCrypt+32, shello.random, 32);
-  memcpy(toCrypt+64, ptr, 69); // -sig
-
-  memcpy(ctx->cliRand, ((struct _isdite_fdn_qtls_clientHello*)((((char*)(struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr))+ 5))->random, 32);
-  memcpy(ctx->srvRand, shello.random, 32);
-
-  int toSignLen = 64 + 69;
-  _isdite_fdn_qtls_signSha512RSA(toCrypt, toSignLen, kxchg.sig);
-
-  send(ctx->sockFd, &kxchg, sizeof(kxchg), 0);
-
-  hash_desc256->process((hash_state*)ctx->msg_hash, ((const unsigned char*)&kxchg), sizeof(kxchg));
-
-  struct _isdite_fdn_qtls_serverHelloDone  hdone;
-
-  hdone.identMagic = 14;
-  hdone.align = 0;
-  hdone.len = 0;
-
-  send(ctx->sockFd, &hdone, sizeof(hdone), 0);
-
-  hash_desc256->process((hash_state*)ctx->msg_hash, ((const unsigned char*)&hdone), sizeof(hdone));
-
-  ctx->tlsState = _ISDITE_QTLS_ST_SHELLODONE;
-  return ISDITE_QTLS_NOT_FINISHED_YET;
 }
 
 void __private_tls_prf_helper(int hash_idx, unsigned long dlen, unsigned char *output, unsigned int outlen, const unsigned char *secret, const unsigned int secret_len,
@@ -537,6 +432,107 @@ void __private_tls_prf(
 
 }
 
+// REGION: HANDLERS
+
+static inline int _isdite_fdn_qtls_handler_preHello
+(
+  struct isdite_fdn_qtls_context * pContext,
+  uint8_t * pInput,
+  int iRealSize,
+  void * pServerDesc,
+  void * pClientDesc
+)
+{
+	hash_desc256->init((hash_state*)pContext->msg_hash);
+	hash_desc256->process
+  (
+    (hash_state*)pContext->msg_hash,
+    pInput,
+    iRealSize
+  );
+
+  pContext->iNonce = 1;
+
+  uint8_t aResponseData[4096];
+
+  /* RECORD LAYER HEADER */
+
+  aResponseData[0] = 0x16; // Handshake
+  (*(uint16_t*)(aResponseData+1)) = 0x0303; // TLS 1.2
+  (*(uint16_t*)(aResponseData+3)) = htons(645 + certSz);
+
+  /* SERVER HELLO */
+
+  aResponseData[5] = 0x02; // Server hello.
+  aResponseData[6] = 0x00; // Length align.
+  (*(uint16_t*)(aResponseData+7)) = htons(38);
+
+  (*(uint16_t*)(aResponseData+9)) = 0x0303; // TLS 1.2
+
+  for(int i = 0; i < 32;i++) // Server random.
+    aResponseData[11 + i] = i * 13 + i;
+
+  aResponseData[43] = 0x00; // Session ID length.
+
+  // Cipher suite (TLC_ECDHE_RSA_WITH_AES_128_GCM_SHA256).
+  (*(uint16_t*)(aResponseData+44)) = 0x2FC0;
+
+  aResponseData[46] = 0x00; // Compression methods.
+
+  /* CERTIFICATE */
+
+  aResponseData[47] = 0x0B; // Certificate.
+  aResponseData[48] = 0x00; // Align.
+  (*(uint16_t*)(aResponseData+49)) = htons(6 + certSz); // Size.
+  aResponseData[51] = 0x00; // Align.
+  (*(uint16_t*)(aResponseData+52)) = htons(certSz + 3);
+  aResponseData[54] = 0x00; // Align.
+  (*(uint16_t*)(aResponseData+55)) = htons(certSz);
+  memcpy(aResponseData + 57, certBuf, certSz);
+
+  /* SERVER KEY EXCHANGE */
+
+  aResponseData[57 + certSz] = 0x0C; // Server key exchange.
+  aResponseData[58 + certSz] = 0x00; // Align.
+  (*(uint16_t*)(aResponseData+59 + certSz)) = htons(585);
+
+  aResponseData[61 + certSz] = 0x03; // Curve type - named curve.
+  (*(uint16_t*)(aResponseData+62 + certSz)) = 0x1700; // Algorithm - secp256r1.
+  aResponseData[64 + certSz] = 65; // Public key length.
+  memcpy(aResponseData + 65 + certSz, eccExpKey, 65); // Public key.
+  // Signing algorithm - rsa pkcs1 sha512.
+  (*(uint16_t*)(aResponseData+130 + certSz)) = 0x0106;
+  (*(uint16_t*)(aResponseData+132 + certSz)) = htons(512); // Signature length.
+
+  uint8_t aToSign[133];
+  memcpy(aToSign, pInput + 6, 32);
+  memcpy(aToSign+32, aResponseData+11, 32);
+  memcpy(aToSign+64, aResponseData + 61 + certSz, 69);
+
+  _isdite_fdn_qtls_signSha512RSA(aToSign, 133, aResponseData + 134 + certSz);
+
+  /* SERVER HELLO DONE */
+  aResponseData[646 + certSz] = 0x0E; // Server hello done.
+  aResponseData[647 + certSz] = 0x00; // Align.
+  (*(uint16_t*)(aResponseData+ 648 + certSz)) = 0x00; // Length.
+
+  /* INTERNAL LOGIC */
+
+  hash_desc256->process
+  (
+    (hash_state*)pContext->msg_hash,
+    aResponseData + 5,
+    645 + certSz
+  );
+
+  memcpy(pContext->lctx.early_handshake_data, pInput + 6, 32);
+  memcpy(pContext->lctx.early_handshake_data + 32, aResponseData + 11, 32); //649 + certSz
+
+  pContext->iState = _ISDITE_QTLS_ST_SHELLODONE;
+
+  _isdite_tcpServer_sendPacketDropOnError(pServerDesc, pClientDesc, aResponseData, 650 + certSz);
+  return ISDITE_QTLS_NOT_FINISHED_YET;
+}
 
 static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_context * ctx, int rs)
 {
@@ -549,30 +545,20 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
 
     isdite_fdn_fsyslog(IL_TRAC, "QTLS TLS 1.2: Received 'Client Key Exchange' packet.");
 
-    void * ptr = (void*)(((uint8_t*)(ctx->dataPtr))+10);
-    memcpy(ctx->cliKey, ptr, 65);
 
     ecc_key remoteKey;
-    memset(&remoteKey, 0, sizeof(ecc_key));
+    __private_tls_ecc_import_key(ek.k, 256, (((uint8_t*)(ctx->dataPtr))+10), 65, &remoteKey, &secp256r1.dp);
 
-    int iRes = __private_tls_ecc_import_key(ek.k, 256, ctx->cliKey, 65, &remoteKey, &secp256r1.dp);
-
+    uint8_t aSharedSecret[128];
     unsigned long outSz = 128;
-    iRes = ecc_shared_secret(&ek, &remoteKey, ctx->shared, &outSz);
 
-    __private_tls_prf(ctx->masterSecret, 48, ctx->shared, outSz, "master secret", 13, ctx->cliRand, 32, ctx->srvRand, 32);
-    __private_tls_prf(ctx->keyExpansion, 40, ctx->masterSecret, 48, "key expansion", 13, ctx->srvRand, 32, ctx->cliRand, 32);
+    ecc_shared_secret(&ek, &remoteKey, aSharedSecret, &outSz);
 
-    memcpy(ctx->clientWriteKey, ctx->keyExpansion, 16);
-    memcpy(ctx->serverWriteKey, ctx->keyExpansion+16, 16);
-    memcpy(ctx->clientIv, ctx->keyExpansion+32, 4);
-    memcpy(ctx->serverIv, ctx->keyExpansion+36, 4);
+    __private_tls_prf(ctx->lctx.early_handshake_data+64, 48, aSharedSecret, outSz, "master secret", 13, ctx->lctx.early_handshake_data, 32, ctx->lctx.early_handshake_data+32, 32);
+    __private_tls_prf(ctx->lctx.early_handshake_data+64+48, 40, ctx->lctx.early_handshake_data+64, 48, "key expansion", 13, ctx->lctx.early_handshake_data+32, 32, ctx->lctx.early_handshake_data, 32);
 
-    ctx->local_ctx = malloc(sizeof(gcm_state));
-    ctx->remote_ctx = malloc(sizeof(gcm_state));
-
-    gcm_init((gcm_state*)ctx->local_ctx, find_cipher("aes"), ctx->serverWriteKey, 16);
-    gcm_init((gcm_state*)ctx->remote_ctx, find_cipher("aes"), ctx->clientWriteKey, 16);
+    memcpy(ctx->clientIv, ctx->lctx.early_handshake_data+64+48+32, 4);
+    memcpy(ctx->serverIv, ctx->lctx.early_handshake_data+64+48+36, 4);
 
     ctx->iFlag |= _ISDITE_QTLS_GOT_KEY;
   }
@@ -580,13 +566,18 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
   {
     isdite_fdn_fsyslog(IL_TRAC, "QTLS TLS 1.2: Received 'Change Cipher Spec'.");
 
-    // Add packet to final handshake hash.
-
     ctx->iFlag |= _ISDITE_QTLS_CIPHER_SPEC;
   }
   else
   {
-    isdite_fdn_fsyslog(IL_TRAC, "QTLS TLS 1.2: Received 'Client Finished' packet.");
+      isdite_fdn_fsyslog(IL_TRAC, "QTLS TLS 1.2: Received 'Client Finished' packet.");
+
+    uint8_t aData[80];
+    memcpy(aData, ctx->lctx.early_handshake_data+64, 80);
+
+    gcm_init((gcm_state*)ctx->remote_ctx, find_cipher("aes"), aData+48, 16);
+    gcm_init((gcm_state*)ctx->lctx.local_ctx, find_cipher("aes"), aData+48+16, 16);
+
 
     char aad[13];
     memset(aad, 0, 13);
@@ -604,8 +595,7 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
     gcm_add_aad((gcm_state*)ctx->remote_ctx, aad, 13);
     gcm_process((gcm_state*)ctx->remote_ctx, ptBuf, 16, ctx->dataPtr + 5 + 8, GCM_DECRYPT);
     unsigned long taglen = 16;
-    gcm_done((gcm_state*)ctx->local_ctx, macTag, &taglen);
-
+    gcm_done((gcm_state*)ctx->lctx.local_ctx, macTag, &taglen);
     hash_desc256->process((hash_state*)ctx->msg_hash, ptBuf, 16);
 
     struct _isdite_fdn_qtls_changeCipherSpec ccs;
@@ -613,7 +603,7 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
     ccs.version = 0x0303;
     ccs.len = htons(1);
     ccs.data = 1;
-    send(ctx->sockFd, &ccs, sizeof(ccs), 0);
+    send(ctx->iSockFd, &ccs, sizeof(ccs), 0);
 
     char hash[32];
     hash_desc256->done((hash_state*)ctx->msg_hash, hash);
@@ -623,7 +613,7 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
     memset(rdata, 0, 8);
     uint8_t data[] = {0x14, 0x00, 0x00, 0x0C};
     memcpy(rdata+8, data, 4);
-    __private_tls_prf(rdata+12, 12, ctx->masterSecret, 48, "server finished", strlen("server finished"), hash, 32, NULL, 0);
+    __private_tls_prf(rdata+12, 12, aData, 48, "server finished", strlen("server finished"), hash, 32, NULL, 0);
 
     uint8_t encRes[16];
 
@@ -636,15 +626,15 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
     aad2[12] = 16;
 
     memset(ctx->serverIv+4, 0, 8);
-    gcm_reset((gcm_state*)ctx->local_ctx);
-    gcm_add_iv((gcm_state*)ctx->local_ctx, ctx->serverIv, 12);
-    gcm_add_aad((gcm_state*)ctx->local_ctx, aad2, 13);
-    gcm_process((gcm_state*)ctx->local_ctx, rdata+8, 16, encRes, GCM_ENCRYPT);
+    gcm_reset((gcm_state*)ctx->lctx.local_ctx);
+    gcm_add_iv((gcm_state*)ctx->lctx.local_ctx, ctx->serverIv, 12);
+    gcm_add_aad((gcm_state*)ctx->lctx.local_ctx, aad2, 13);
+    gcm_process((gcm_state*)ctx->lctx.local_ctx, rdata+8, 16, encRes, GCM_ENCRYPT);
 
     memcpy(rdata+8, encRes, 16);
 
     taglen = 16;
-    gcm_done((gcm_state*)ctx->local_ctx, rdata+24, &taglen);
+    gcm_done((gcm_state*)ctx->lctx.local_ctx, rdata+24, &taglen);
 
 
     struct _isdite_fdn_qtls_serverFinished fin;
@@ -654,9 +644,9 @@ static inline int _isdite_fdn_qtls_handler_afterHello(struct isdite_fdn_qtls_con
     fin.len = htons(40);
     memcpy(fin.data, rdata, 40);
 
-    send(ctx->sockFd, &fin, sizeof(fin), 0);
+    send(ctx->iSockFd, &fin, sizeof(fin), 0);
 
-    ctx->tlsState = _ISDITR_QTLS_ST_DATA_READY;
+    ctx->iState = _ISDITR_QTLS_ST_DATA_READY;
   }
 
   return ISDITE_QTLS_INSUFFICIENT_DATA;
@@ -698,7 +688,7 @@ static inline int _isdite_fdn_qtls_handler_apdata(struct isdite_fdn_qtls_context
     gcm_add_aad((gcm_state*)ctx->remote_ctx, aad, 13);
     gcm_process((gcm_state*)ctx->remote_ctx, ctx->conDataBuffer, ptextSz, ctx->dataPtr + 5 + 8, GCM_DECRYPT);
     unsigned long taglen = 16;
-    gcm_done((gcm_state*)ctx->local_ctx, macTag, &taglen);
+    gcm_done((gcm_state*)ctx->lctx.local_ctx, macTag, &taglen);
 
     return ISDITE_QTLS_DATA_READY;
   }
@@ -718,85 +708,82 @@ void isdite_fdn_qtls_sendData(struct isdite_fdn_qtls_context * ctx, void * data,
   outputBuffer[4] = 24 + dataSz;
 
   *((uint32_t*)(outputBuffer+5)) = 0;
-  *((uint32_t*)(outputBuffer+5 + 4)) = htonl(ctx->nonce);
+  *((uint32_t*)(outputBuffer+5 + 4)) = htonl(ctx->iNonce);
 
   uint8_t aad[13];
   memset(aad, 0, 13);
-  aad[7] = ctx->nonce++;
+  aad[7] = ctx->iNonce++;
   aad[8] = 23;
   aad[9] = 3;
   aad[10] = 3;
   aad[12] = dataSz;
 
   memcpy(ctx->serverIv+4, aad, 8);
-  gcm_reset((gcm_state*)ctx->local_ctx);
-  gcm_add_iv((gcm_state*)ctx->local_ctx, ctx->serverIv, 12);
-  gcm_add_aad((gcm_state*)ctx->local_ctx, aad, 13);
-  gcm_process((gcm_state*)ctx->local_ctx, data, dataSz, outputBuffer + 5 + 8, GCM_ENCRYPT);
+  gcm_reset((gcm_state*)ctx->lctx.local_ctx);
+  gcm_add_iv((gcm_state*)ctx->lctx.local_ctx, ctx->serverIv, 12);
+  gcm_add_aad((gcm_state*)ctx->lctx.local_ctx, aad, 13);
+  gcm_process((gcm_state*)ctx->lctx.local_ctx, data, dataSz, outputBuffer + 5 + 8, GCM_ENCRYPT);
 
   unsigned long taglen = 16;
-  gcm_done((gcm_state*)ctx->local_ctx, outputBuffer + 5 + 8 + dataSz, &taglen);
+  gcm_done((gcm_state*)ctx->lctx.local_ctx, outputBuffer + 5 + 8 + dataSz, &taglen);
 
-  send(ctx->sockFd, outputBuffer, 5 + 24 + dataSz, 0);
+  send(ctx->iSockFd, outputBuffer, 5 + 24 + dataSz, 0);
 }
 
-
-static inline int _isdite_fdn_qtls_isPacketComplete(struct isdite_fdn_qtls_context * ctx, int rs)
+int isdite_qtls_processInput(void * sdesc, void * desc, struct isdite_fdn_qtls_context * ctx, uint8_t * input, int inputSize)
 {
-  return rs >= ntohs(((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->length) ? 1 : 0;
-}
-
-int isdite_fdn_qtls_processInput(struct isdite_fdn_qtls_context * ctx)
-{
-  int realDataSz = ctx->dataSz - ctx->pktTop;
-  if
-  (
-    realDataSz < sizeof(struct _isdite_fdn_qtls_tlsRecordLayerHeader) ||
-    !_isdite_fdn_qtls_isPacketComplete(ctx, realDataSz)
-  )
-  {
-    return ISDITE_QTLS_INSUFFICIENT_DATA;
-  }
-
-
-  int res = 0;
-  switch(ctx->tlsState)
-  {
-    case _ISDITE_QTLS_PREHELLO:
-    {
-      res = _isdite_fdn_qtls_handler_preHello(ctx, realDataSz);
-      break;
-    }
-    case _ISDITE_QTLS_ST_SHELLODONE:
-    {
-      res = _isdite_fdn_qtls_handler_afterHello(ctx, realDataSz);
-      break;
-    }
-    case _ISDITR_QTLS_ST_DATA_READY:
-    {
-      res = _isdite_fdn_qtls_handler_apdata(ctx, realDataSz);
-      break;
-    }
-    default:
-    {
-      break;
-    }
-  }
-
-  int procDataSz = ntohs(((struct _isdite_fdn_qtls_tlsRecordLayerHeader*)ctx->dataPtr)->length) + 5;
-  if(realDataSz == procDataSz)
-  {
-    ctx->dataPtr = ctx->buf;
-    ctx->pktTop = 0;
-    ctx->dataSz = 0;
-  }
+  if(inputSize < sizeof(struct _isdite_fdn_qtls_tlsRecordLayerHeader))
+    return ISDITE_QTLS_INVALID_DATA;
   else
   {
-    ctx->dataPtr += procDataSz;
-    ctx->pktTop += procDataSz;
+    ctx->dataPtr = input;
 
-    return isdite_fdn_qtls_processInput(ctx);
+    uint16_t ui16RecordLayerSize = ntohs(*(uint16_t*)(input+3)) + 5;
+    if(ui16RecordLayerSize > 8192)
+      return ISDITE_QTLS_INVALID_DATA;
+
+    if(inputSize >= ui16RecordLayerSize)
+    {
+      int res = 0;
+      switch(ctx->iState)
+      {
+        case _ISDITE_QTLS_PREHELLO:
+        {
+          res = _isdite_fdn_qtls_handler_preHello(ctx, input + 5, ui16RecordLayerSize - 5, sdesc, desc);
+          break;
+        }
+        case _ISDITE_QTLS_ST_SHELLODONE:
+        {
+          res = _isdite_fdn_qtls_handler_afterHello(ctx, ui16RecordLayerSize);
+          break;
+        }
+        case _ISDITR_QTLS_ST_DATA_READY:
+        {
+          res = _isdite_fdn_qtls_handler_apdata(ctx, ui16RecordLayerSize);
+          break;
+        }
+        default:
+        {
+          break;
+        }
+      }
+
+      if(res == ISDITE_QTLS_INVALID_DATA)
+        return res;
+
+      if(ui16RecordLayerSize == inputSize)
+        return res;
+      else
+        return isdite_qtls_processInput
+        (
+          sdesc,
+          desc,
+          ctx,
+          input+ui16RecordLayerSize,
+          inputSize - ui16RecordLayerSize
+        );
+    }
+    else
+      return ISDITE_QTLS_INVALID_DATA;
   }
-
-  return res;
 }

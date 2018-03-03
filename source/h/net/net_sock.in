@@ -1,0 +1,180 @@
+#ifndef ISDITE_FDN_NETSOCK
+#define ISDITE_FDN_NETSOCK
+
+#if ISDITE_PLATFORM == ISDITE_TPLATFORM_LINUX
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <errno.h>
+
+#define ISDITE_NET_AFAM_INET4 AF_INET
+#define ISDITE_NET_AFAM_INET6 AF_INET6
+
+#define ISDITE_NET_SOCK_TCP SOCK_STREAM
+#define ISDITE_NET_SOCK_OPT_NONBLOCK SOCK_NONBLOCK
+
+#define ISDITE_NET_INET4_ADDR_SYS struct sockaddr_in
+
+#define ISDITE_TCP_FRAME_SIZE 1428
+
+#else
+#error "Not implemented."
+#endif
+
+#include <stdint.h>
+
+#include "../def.h"
+
+
+
+struct isdite_net_localSocketIn4
+{
+  int iSysFd; // System file descriptor representing socket.
+};
+
+struct isdite_net_remoteSocketIn4
+{
+  int iSysFd; // System file descriptor representing socket.
+
+  union
+  {
+    uint8_t aRemoteAddr[4]; // 4 bytes for remote IP address representation.
+    uint32_t ui32RemoteAddr;
+  } uAddr;
+
+  uint16_t ui16RemotePort; // Remote port address.
+};
+
+static inline iResult isdite_net_socketCreate_IN4
+(
+  struct isdite_net_localSocketIn4 * pHandle,
+  int iType,
+  int iExtra
+)
+{
+  pHandle->iSysFd = socket(AF_INET, iType | iExtra, 0);
+  /*setsockopt
+  (
+    pHandle->iSysFd,
+    SOL_SOCKET,
+    SO_REUSEADDR,
+    &(int){ 1 },
+    sizeof(int)
+  );*/
+  return pHandle->iSysFd == -1 ? IFAULT : ISUCCESS;
+}
+
+static inline iResult isdite_net_socketBind_IN4
+(
+  struct isdite_net_localSocketIn4 * pHandle,
+  const char * pAddress,
+  uint16_t ui16Port
+)
+{
+  struct sockaddr_in sSocketInfo;
+  sSocketInfo.sin_family = AF_INET;
+  sSocketInfo.sin_addr.s_addr = inet_addr(pAddress);
+  sSocketInfo.sin_port = htons(ui16Port);
+
+  return bind(pHandle->iSysFd, (const struct sockaddr*)&sSocketInfo, sizeof(sSocketInfo)) == 0 ? ISUCCESS : IFAULT;
+}
+
+static inline iResult isdite_net_socketListen_IN4
+(
+  struct isdite_net_localSocketIn4 * pHandle,
+  int iQueueSize
+)
+{
+  return listen(pHandle->iSysFd, iQueueSize) == 0 ? ISUCCESS : IFAULT;
+}
+
+static inline iResult isdite_net_socketAcceptFast_IN4
+(
+  struct isdite_net_localSocketIn4 * pLocalHandle,
+  struct isdite_net_remoteSocketIn4 * pHandle,
+  void * pAcceptStackBuffer,
+  int * pStackBufferSize,
+  int iExtra
+)
+{
+  *pStackBufferSize = sizeof(struct sockaddr_in);
+  struct sockaddr_in * pSockAddr = (struct sockaddr_in *)pAcceptStackBuffer;
+
+  pHandle->iSysFd = accept
+  (
+    pLocalHandle->iSysFd,
+    (struct sockaddr*)pSockAddr,
+    (socklen_t*)pStackBufferSize
+  );
+
+  if(pHandle->iSysFd == -1)
+    return IFAULT;
+
+  pHandle->uAddr.ui32RemoteAddr = pSockAddr->sin_addr.s_addr;
+  pHandle->ui16RemotePort = ntohs(pSockAddr->sin_port);
+
+  return ISUCCESS;
+}
+
+static inline int isdite_net_socketSendFast_IN4
+(
+  struct isdite_net_remoteSocketIn4 * pHandle,
+  void * pData,
+  unsigned int uiDataSize
+)
+{
+  int iFlags = MSG_NOSIGNAL;
+  int iSent;
+
+  iSent = send(pHandle->iSysFd, pData, uiDataSize, iFlags);
+
+  if(iSent == -1)
+  {
+    if(errno == EAGAIN || errno == EWOULDBLOCK)
+      return 0;
+    else
+      return -1;
+  }
+
+  return iSent;
+}
+
+static inline int isdite_net_socketReceiveFast_IN4
+(
+  struct isdite_net_remoteSocketIn4 * pHandle,
+  void * pData,
+  unsigned int uiDataSize
+)
+{
+    int iReceived = recv(pHandle->iSysFd, pData, uiDataSize, 0);
+
+    if(iReceived == -1)
+    {
+      if(errno == EAGAIN || errno == EWOULDBLOCK)
+        return -2;
+      else
+        return -1;
+    }
+
+    return iReceived;
+}
+
+static inline void isdite_net_localSocketFree_IN4
+(
+  struct isdite_net_localSocketIn4 * pHandle
+)
+{
+  if(pHandle->iSysFd != -1)
+    close(pHandle->iSysFd);
+}
+
+static inline void isdite_net_remoteSocketDisconnect_IN4
+(
+  struct isdite_net_remoteSocketIn4 * pHandle
+)
+{
+  close(pHandle->iSysFd);
+}
+
+#endif
