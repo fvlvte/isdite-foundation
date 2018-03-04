@@ -28,11 +28,25 @@ struct isdite_fdn_qtls_context
   uint8_t clientIv[12];
   uint8_t serverIv[12];
 
+  void * cert;
+
   char conDataBuffer[4096];
   int conDataSz;
 };
 
-void _isdite_fdn_qtls_initCert();
+#define IS_QTLS_SERVER_CERT void*
+
+#define IS_QTLS_CERT_RSA4096_WITH_SHA512 0
+#define IS_QTLS_CERT_MAX 0
+
+int is_qtls_loadCertificateFromFile
+(
+  int iType,
+  const char * pCertPath,
+  const char * pPrivKeyPath,
+  IS_QTLS_SERVER_CERT * pInstance
+);
+
 int isdite_qtls_processInput(void * sdesc, void * desc, struct isdite_fdn_qtls_context * ctx, uint8_t * input, int inputSize);
 void isdite_fdn_qtls_sendData(struct isdite_fdn_qtls_context * pContext, void * pData, int iDataSz, void * pServerDesc, void * pClientDesc);
 int isdite_fdn_qtls_recv(struct isdite_fdn_qtls_context * ctx, void * buffer, int sz);

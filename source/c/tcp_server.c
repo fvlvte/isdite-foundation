@@ -82,6 +82,11 @@ struct _isdite_fdn_tcpSrv_serverDesc /* server pServerDescriptor */
 
   int uiMaxConnections;
 
+  void * pHandler;
+  void * pCustom;
+
+  void * pCert;
+
   /* net i/o worker thread */
   pthread_t iNetWorkerFd;
 
@@ -130,6 +135,24 @@ static inline void _isdite_fdn_tcpSrv_finalizeCon
   #endif
 }
 
+static void _is_net_tcpServer_cbWriteWrap(struct  _isdite_fdn_tcpSrv_serverDesc * pServerDesc, struct  _isdite_fdn_tcpSrv_clientDesc * pClientDesc, void * data, int size, int appendHeaders)
+{
+  if(data == NULL)
+    _isdite_fdn_tcpSrv_finalizeCon(pServerDesc, pClientDesc);
+  else
+  {
+    if(appendHeaders == 0)
+      isdite_fdn_qtls_sendData(&pClientDesc->ctx, data, size, pServerDesc, pClientDesc);
+    else
+    {
+      char outbuf[8192];
+      int n = sprintf(outbuf, "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=UTF-8\r\nServer: ira\r\nContent-Length: %d\r\n\r\n%s", size, (char*)data);
+      isdite_fdn_qtls_sendData(&pClientDesc->ctx, outbuf, n, pServerDesc, pClientDesc);
+    }
+  }
+
+}
+
 static void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_serverDesc * pServerDesc)
 {
   // Variables.
@@ -138,6 +161,7 @@ static void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_serverDes
   int iInputSize;
   ISDITE_NET_INET4_ADDR_SYS sAddrInfoBuf;
   int iAddrInfoLen;
+  void (*fCallback) (void*, void*, void*, int, void*, void*);
   uint8_t aInPacketBuffer[8192];
 
   // Epoll wait interrupt signal.
@@ -204,6 +228,7 @@ static void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_serverDes
 
           pClientDesc->iStatus = _ISDITE_TCPSRV_CLI_STATE_EST;
           pClientDesc->userDataPtr = pClientDesc->userData;
+          pClientDesc->ctx.cert = pServerDesc->pCert;
 
           #ifdef ISDITE_NETSTAT
           pClientDesc->iEstablishedTimestamp = (int)time(NULL);
@@ -265,10 +290,9 @@ static void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_serverDes
             _isdite_fdn_tcpSrv_finalizeCon(pServerDesc, pClientDesc);
           else if(iRes == ISDITE_QTLS_DATA_READY)
           {
-            pClientDesc->ctx.conDataBuffer[pClientDesc->ctx.conDataSz] = 0;
-            printf(pClientDesc->ctx.conDataBuffer);
+            fCallback = pServerDesc->pHandler;
 
-            isdite_fdn_qtls_sendData(&pClientDesc->ctx, "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\nServer: ira\r\nConnection: close\r\nContent-Length: 9\r\n\r\nHELLO IRA", strlen("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\nServer: ira\r\nConnection: close\r\nContent-Length: 9\r\n\r\nHELLO IRA"), pServerDesc, pClientDesc);
+            fCallback(pServerDesc, pClientDesc, pClientDesc->ctx.conDataBuffer, pClientDesc->ctx.conDataSz, &_is_net_tcpServer_cbWriteWrap, pServerDesc->pCustom);
           }
         }
       }
@@ -278,8 +302,6 @@ static void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_serverDes
 
 isdite_fn_tcp isdite_fn_tcpServer_create(char * ip, int port, int maxcon)
 {
-  _isdite_fdn_qtls_initCert();
-
   #ifdef ISDITE_DEBUG
 
   float fMemReq = (((float)sizeof(void*) * (float)maxcon) +
@@ -594,6 +616,21 @@ void _isdite_tcpServer_sendPacketDropOnError
     _isdite_fdn_tcpSrv_finalizeCon(pServerDesc, pClientDesc);
 }
 
+void isdite_net_tcpServer_bindPacketHandler(isdite_fn_tcp server, void * handler, void * custom)
+{
+  ((struct _isdite_fdn_tcpSrv_serverDesc*)server)->pHandler = handler;
+  ((struct _isdite_fdn_tcpSrv_serverDesc*)server)->pCustom = custom;
+}
+
+void isdite_net_tcpServer_join(isdite_fn_tcp server)
+{
+  pthread_join(((struct _isdite_fdn_tcpSrv_serverDesc*)server)->iNetWorkerFd, NULL);
+}
+
+void isdite_net_tcpServer_bindTlsCert(isdite_fn_tcp server, void* cert)
+{
+  ((struct _isdite_fdn_tcpSrv_serverDesc*)server)->pCert = cert;
+}
 
 #undef _ISDITE_TCPSRV_CLI_UDATA_SIZE
 #undef _ISDITE_TCPSRV_KEEPALIVE

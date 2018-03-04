@@ -120,7 +120,7 @@ int __private_tls_ecc_import_key(const unsigned char *private_key, int private_l
     return CRYPT_OK;
 }
 
-static inline void _isdite_fdn_qtls_signSha512RSA(void * toCrypt, int toSignLen, void * signature)
+static inline void _isdite_fdn_qtls_signSha512RSA(void * toCrypt, int toSignLen, void * signature, rsa_key * key)
 {
   unsigned char hash[64];
   hash_state md;
@@ -134,7 +134,7 @@ static inline void _isdite_fdn_qtls_signSha512RSA(void * toCrypt, int toSignLen,
 
 	// Sign hash.
 	unsigned long siglen = 512;
-	rsa_sign_hash_ex(hash, hash_desc->hashsize, signature, &siglen, padding, NULL, prng_idx, hash_idx, saltlen, &key);
+	rsa_sign_hash_ex(hash, hash_desc->hashsize, signature, &siglen, padding, NULL, prng_idx, hash_idx, saltlen, key);
 }
 
 void __private_tls_prf_helper(int hash_idx, unsigned long dlen, unsigned char *output, unsigned int outlen, const unsigned char *secret, const unsigned int secret_len,

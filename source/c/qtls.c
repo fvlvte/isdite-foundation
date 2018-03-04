@@ -8,9 +8,12 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <sys/stat.h>
 #include <string.h>
-
+#include <errno.h>
 #include "ext/tomcrypt.c"
+#include "ierr.h"
+#include "mem.h"
 
 extern void _isdite_tcpServer_sendPacketDropOnError(void *, void *, void *, int);
 
@@ -30,6 +33,14 @@ const struct ltc_hash_descriptor * hash_desc256 = &sha256_desc;
 int hash_idx;
 int hash_idx256;
 int prng_idx;
+
+struct _is_qtls_rsa4096_cert
+{
+  int iIdentType;
+  rsa_key sPrivateKey;
+  void * pCertificate;
+  unsigned int uiCertificateSize;
+};
 
 struct ECCCurveParameters {
     int size;
@@ -66,12 +77,6 @@ static struct ECCCurveParameters secp256r1 = {
     "FFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551"  // order (n)
 };
 
-char certBuf[4096];
-int certSz = 0;
-
-char keyBuf[4096];
-int keySz = 0;
-
 ecc_key ek;
 char eccKey[4096];
 int ecKeySz = 0;
@@ -81,33 +86,8 @@ long eccExpKeySz = 0;
 
 #include "qtls_helper.in"
 
-void _isdite_fdn_qtls_initCert()
+static inline void _isdite_fdn_qtls_init()
 {
-  FILE * h = fopen("cert.bin", "rb");
-  if(h == NULL)
-  {
-    printf("Failed to open cert data!\n");
-
-    return;
-  }
-
-  certSz = fread(certBuf, 1, 4096, h);
-  fclose(h);
-
-  h = fopen("key.bin", "rb");
-  keySz = fread(keyBuf, 1, 4096, h);
-
-  fclose(h);
-
-  // priv key
-
-  char privKey[4096];
-
-  h = fopen("priv.der", "r");
-  int keySz = fread(privKey, 1, 4096, h);
-
-  fclose(h);
-
   ltc_mp = ltm_desc;
 
   const int padding = LTC_LTC_PKCS_1_V1_5;
@@ -124,8 +104,231 @@ void _isdite_fdn_qtls_initCert()
 
   eccExpKeySz = 4096;
   ecc_ansi_x963_export(&ek, eccExpKey, &eccExpKeySz);
+}
 
-	int err = rsa_import(privKey, keySz, &key);
+int is_qtls_loadCertificateFromFile
+(
+  int iType,
+  const char * pCertPath,
+  const char * pPrivKeyPath,
+  IS_QTLS_SERVER_CERT * pInstance
+)
+{
+  #define _IMM_BUF_SIZE 4096
+
+  int iRes;
+  FILE * pHandle;
+  struct stat sSysStat;
+  struct _is_qtls_rsa4096_cert * pCertData = NULL;
+  uint8_t aImmediateBuffer[_IMM_BUF_SIZE];
+
+  _isdite_fdn_qtls_init();
+
+  if(iType > IS_QTLS_CERT_MAX)
+  {
+    isdite_fdn_fsyslog
+    (
+      IL_ERRO,
+      "Specified certificate type ID is unknown (%d).",
+      iType
+    );
+
+    return IS_INVALID_PARAM;
+  }
+
+  pHandle = fopen(pCertPath, "rb");
+
+  if(pHandle == INULL)
+  {
+    isdite_fdn_fsyslog
+    (
+      IL_ERRO,
+      "Failed to open certificate file (%s | %d).",
+      pCertPath, errno
+    );
+
+    return IS_FILE_NO_ACCESS;
+  }
+
+
+  if(fstat(fileno(pHandle), &sSysStat) != 0)
+  {
+    isdite_fdn_fsyslog
+    (
+      IL_ERRO,
+      "Failed to obtain certificate file size (%s | %d).",
+      pCertPath, errno
+    );
+
+    iRes = IS_INTERNAL;
+    goto lClean;
+  }
+
+  pCertData =
+    (struct _is_qtls_rsa4096_cert*)isdite_mem_heapCommit(sizeof *pCertData);
+
+  if(pCertData == INULL)
+  {
+    isdite_fdn_fsyslog
+    (
+      IL_ERRO,
+      "Failed to allocate memory for certificate handle (%d B | %d).",
+      sizeof *pCertData, errno
+    );
+
+    isdite_fdn_raiseThreadIntError(ISERR_OOM);
+    iRes = IS_INTERNAL;
+    goto lClean;
+  }
+
+  pCertData->pCertificate = isdite_mem_heapCommit(sSysStat.st_size);
+
+  if(pCertData->pCertificate == INULL)
+  {
+    isdite_fdn_fsyslog
+    (
+      IL_ERRO,
+      "Failed to allocate memory for certificate data (%d B | %d).",
+      sizeof *pCertData, errno
+    );
+
+    isdite_fdn_raiseThreadIntError(ISERR_OOM);
+    iRes = IS_INTERNAL;
+    goto lClean;
+  }
+
+  if(fread(pCertData->pCertificate, sSysStat.st_size, 1, pHandle) != 1)
+  {
+    isdite_fdn_fsyslog
+    (
+      IL_ERRO,
+      "Failed to read certificate file (%s | %d).",
+      pCertPath, errno
+    );
+
+    iRes = IS_INTERNAL;
+    goto lClean;
+  }
+
+  pCertData->uiCertificateSize = sSysStat.st_size;
+
+  if(fclose(pHandle) != 0)
+  {
+    isdite_fdn_fsyslog
+    (
+      IL_ERRO,
+      "Failed to close certificate file (%s | %d).",
+      pCertPath, errno
+    );
+
+    iRes = IS_INTERNAL;
+    goto lClean;
+  }
+
+  // PRIV KEY
+
+  pHandle = fopen(pPrivKeyPath, "rb");
+
+  if(pHandle == INULL)
+  {
+    isdite_fdn_fsyslog
+    (
+      IL_ERRO,
+      "Failed to open private key file (%s | %d).",
+      pPrivKeyPath, errno
+    );
+
+    iRes = IS_FILE_NO_ACCESS;
+    goto lClean;
+  }
+
+  if(fstat(fileno(pHandle), &sSysStat) != 0)
+  {
+    isdite_fdn_fsyslog
+    (
+      IL_ERRO,
+      "Failed to obtain private key file size (%s | %d).",
+      pPrivKeyPath, errno
+    );
+
+    iRes = IS_INTERNAL;
+    goto lClean;
+  }
+
+  if(sSysStat.st_size > _IMM_BUF_SIZE)
+  {
+    isdite_fdn_fsyslog
+    (
+      IL_ERRO,
+      "Private key file size is bigger than internal buffer (%s | %d > %d).",
+      pPrivKeyPath, sSysStat.st_size, _IMM_BUF_SIZE
+    );
+
+    iRes = IS_INTERNAL;
+    goto lClean;
+  }
+
+  if(fread(aImmediateBuffer, sSysStat.st_size, 1, pHandle) != 1)
+  {
+    isdite_fdn_fsyslog
+    (
+      IL_ERRO,
+      "Failed to read private key file (%s | %d).",
+      pPrivKeyPath, errno
+    );
+
+    iRes = IS_INTERNAL;
+    goto lClean;
+  }
+
+  if(fclose(pHandle) != 0)
+  {
+    isdite_fdn_fsyslog
+    (
+      IL_ERRO,
+      "Failed to close private key file (%s | %d).",
+      pPrivKeyPath, errno
+    );
+
+    iRes = IS_INTERNAL;
+    goto lClean;
+  }
+
+  if
+  (
+    rsa_import(aImmediateBuffer, sSysStat.st_size, &pCertData->sPrivateKey)
+      != CRYPT_OK
+  )
+  {
+    isdite_fdn_fsyslog
+    (
+      IL_ERRO,
+      "Failed to import private key (invalid format? - DER required)."
+    );
+
+    iRes = IS_INTERNAL;
+    goto lClean;
+  }
+
+  *pInstance = pCertData;
+
+  return IS_SUCCESS;
+
+  lClean:
+
+  if(pHandle != NULL)
+    fclose(pHandle);
+
+  if(pCertData != NULL)
+  {
+    if(pCertData->pCertificate != INULL)
+      isdite_mem_heapFree(pCertData->pCertificate);
+    isdite_mem_heapFree(pCertData);
+  }
+
+  return iRes;
+
+  #undef _IMM_BUF_SIZE
 }
 
 // REGION: HANDLERS
@@ -139,6 +342,7 @@ static inline int _isdite_qtls_handler_clientHello
   void * pClientDesc
 )
 {
+  struct _is_qtls_rsa4096_cert* cert = (struct _is_qtls_rsa4096_cert*)pContext->cert;
 	hash_desc256->init((hash_state*)pContext->msg_hash);
 
 	hash_desc256->process
@@ -156,7 +360,7 @@ static inline int _isdite_qtls_handler_clientHello
 
   aResponseData[0] = 0x16; // Handshake
   (*(uint16_t*)(aResponseData+1)) = 0x0303; // TLS 1.2
-  (*(uint16_t*)(aResponseData+3)) = htons(645 + certSz);
+  (*(uint16_t*)(aResponseData+3)) = htons(645 + cert->uiCertificateSize);
 
   /* SERVER HELLO */
 
@@ -180,38 +384,38 @@ static inline int _isdite_qtls_handler_clientHello
 
   aResponseData[47] = 0x0B; // Certificate.
   aResponseData[48] = 0x00; // Align.
-  (*(uint16_t*)(aResponseData+49)) = htons(6 + certSz); // Size.
+  (*(uint16_t*)(aResponseData+49)) = htons(6 + cert->uiCertificateSize); // Size.
   aResponseData[51] = 0x00; // Align.
-  (*(uint16_t*)(aResponseData+52)) = htons(certSz + 3);
+  (*(uint16_t*)(aResponseData+52)) = htons(cert->uiCertificateSize + 3);
   aResponseData[54] = 0x00; // Align.
-  (*(uint16_t*)(aResponseData+55)) = htons(certSz);
-  memcpy(aResponseData + 57, certBuf, certSz);
+  (*(uint16_t*)(aResponseData+55)) = htons(cert->uiCertificateSize);
+  memcpy(aResponseData + 57, cert->pCertificate, cert->uiCertificateSize);
 
   /* SERVER KEY EXCHANGE */
 
-  aResponseData[57 + certSz] = 0x0C; // Server key exchange.
-  aResponseData[58 + certSz] = 0x00; // Align.
-  (*(uint16_t*)(aResponseData+59 + certSz)) = htons(585);
+  aResponseData[57 + cert->uiCertificateSize] = 0x0C; // Server key exchange.
+  aResponseData[58 + cert->uiCertificateSize] = 0x00; // Align.
+  (*(uint16_t*)(aResponseData+59 + cert->uiCertificateSize)) = htons(585);
 
-  aResponseData[61 + certSz] = 0x03; // Curve type - named curve.
-  (*(uint16_t*)(aResponseData+62 + certSz)) = 0x1700; // Algorithm - secp256r1.
-  aResponseData[64 + certSz] = 65; // Public key length.
-  memcpy(aResponseData + 65 + certSz, eccExpKey, 65); // Public key.
+  aResponseData[61 + cert->uiCertificateSize] = 0x03; // Curve type - named curve.
+  (*(uint16_t*)(aResponseData+62 + cert->uiCertificateSize)) = 0x1700; // Algorithm - secp256r1.
+  aResponseData[64 + cert->uiCertificateSize] = 65; // Public key length.
+  memcpy(aResponseData + 65 + cert->uiCertificateSize, eccExpKey, 65); // Public key.
   // Signing algorithm - rsa pkcs1 sha512.
-  (*(uint16_t*)(aResponseData+130 + certSz)) = 0x0106;
-  (*(uint16_t*)(aResponseData+132 + certSz)) = htons(512); // Signature length.
+  (*(uint16_t*)(aResponseData+130 + cert->uiCertificateSize)) = 0x0106;
+  (*(uint16_t*)(aResponseData+132 + cert->uiCertificateSize)) = htons(512); // Signature length.
 
   uint8_t aToSign[133];
   memcpy(aToSign, pInput + 6, 32);
   memcpy(aToSign+32, aResponseData+11, 32);
-  memcpy(aToSign+64, aResponseData + 61 + certSz, 69);
+  memcpy(aToSign+64, aResponseData + 61 + cert->uiCertificateSize, 69);
 
-  _isdite_fdn_qtls_signSha512RSA(aToSign, 133, aResponseData + 134 + certSz);
+  _isdite_fdn_qtls_signSha512RSA(aToSign, 133, aResponseData + 134 + cert->uiCertificateSize, &cert->sPrivateKey);
 
   /* SERVER HELLO DONE */
-  aResponseData[646 + certSz] = 0x0E; // Server hello done.
-  aResponseData[647 + certSz] = 0x00; // Align.
-  (*(uint16_t*)(aResponseData+ 648 + certSz)) = 0x00; // Length.
+  aResponseData[646 + cert->uiCertificateSize] = 0x0E; // Server hello done.
+  aResponseData[647 + cert->uiCertificateSize] = 0x00; // Align.
+  (*(uint16_t*)(aResponseData+ 648 + cert->uiCertificateSize)) = 0x00; // Length.
 
   /* INTERNAL LOGIC */
 
@@ -219,7 +423,7 @@ static inline int _isdite_qtls_handler_clientHello
   (
     (hash_state*)pContext->msg_hash,
     aResponseData + 5,
-    645 + certSz
+    645 + cert->uiCertificateSize
   );
 
   memcpy(pContext->lctx.early_handshake_data, pInput + 6, 32);
@@ -232,7 +436,7 @@ static inline int _isdite_qtls_handler_clientHello
     pServerDesc,
     pClientDesc,
     aResponseData,
-    650 + certSz
+    650 + cert->uiCertificateSize
   );
   return ISDITE_QTLS_NOT_FINISHED_YET;
 }

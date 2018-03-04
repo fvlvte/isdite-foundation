@@ -9,7 +9,7 @@ HEADER_DIR='../source/h'
 HEADER_DIR2='../source/c'
 SOURCE_DIR='../source/c'
 
-SOURCE_FILES=('app.c log.c tcp_server.c ierr.c qtls.c ext/aes.c mem.c util.c')
+SOURCE_FILES=('app.c log.c tcp_server.c ierr.c qtls.c ext/aes.c mem.c util.c https_server.c')
 
 if [ ! -d $BUILD_DIR ]; then
   mkdir $BUILD_DIR;
