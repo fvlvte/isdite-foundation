@@ -25,18 +25,8 @@ struct isdite_fdn_qtls_context
 
   uint8_t msg_hash[_ISDITE_QTLS_HASH_CONTEXT_SIZE];
 
-
-  int iSockFd;
-  void * dataPtr;
-
   uint8_t clientIv[12];
   uint8_t serverIv[12];
-
-  char buf[8192];
-
-  unsigned long sharedSz;
-  int cstData;
-  int dataSz;
 
   char conDataBuffer[4096];
   int conDataSz;
@@ -44,8 +34,7 @@ struct isdite_fdn_qtls_context
 
 void _isdite_fdn_qtls_initCert();
 int isdite_qtls_processInput(void * sdesc, void * desc, struct isdite_fdn_qtls_context * ctx, uint8_t * input, int inputSize);
-void isdite_fdn_qtls_sendData(struct isdite_fdn_qtls_context * ctx, void * data, int dataSz);
-
+void isdite_fdn_qtls_sendData(struct isdite_fdn_qtls_context * pContext, void * pData, int iDataSz, void * pServerDesc, void * pClientDesc);
 int isdite_fdn_qtls_recv(struct isdite_fdn_qtls_context * ctx, void * buffer, int sz);
 int isdite_fdn_qtls_send(struct isdite_fdn_qtls_context * ctx, void * data, int sz);
 

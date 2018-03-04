@@ -182,8 +182,6 @@ static void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_serverDes
           )
             break;
 
-          pClientDesc->ctx.iSockFd = pClientDesc->sClientSocket.iSysFd;
-
           int buffersize = 8*1024;
           setsockopt
           (
@@ -210,8 +208,6 @@ static void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_serverDes
           #ifdef ISDITE_NETSTAT
           pClientDesc->iEstablishedTimestamp = (int)time(NULL);
           pClientDesc->iLastActiveTimestamp = pClientDesc->iEstablishedTimestamp;
-
-          pClientDesc->ctx.dataPtr = pClientDesc->ctx.buf;
 
           pServerDesc->iConnectionsPassed++;
           pServerDesc->iConnectionsAlive++;
@@ -272,7 +268,7 @@ static void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_serverDes
             pClientDesc->ctx.conDataBuffer[pClientDesc->ctx.conDataSz] = 0;
             printf(pClientDesc->ctx.conDataBuffer);
 
-            isdite_fdn_qtls_sendData(&pClientDesc->ctx, "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\nServer: ira\r\nConnection: close\r\nContent-Length: 9\r\n\r\nHELLO IRA", strlen("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\nServer: ira\r\nConnection: close\r\nContent-Length: 9\r\n\r\nHELLO IRA"));
+            isdite_fdn_qtls_sendData(&pClientDesc->ctx, "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\nServer: ira\r\nConnection: close\r\nContent-Length: 9\r\n\r\nHELLO IRA", strlen("HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=UTF-8\r\nServer: ira\r\nConnection: close\r\nContent-Length: 9\r\n\r\nHELLO IRA"), pServerDesc, pClientDesc);
           }
         }
       }

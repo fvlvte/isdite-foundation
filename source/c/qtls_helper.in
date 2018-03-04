@@ -1,0 +1,233 @@
+static int __private_tls_is_point(ecc_key *key) {
+    void *prime, *b, *t1, *t2;
+    int  err;
+
+    if ((err = mp_init_multi(&prime, &b, &t1, &t2, NULL)) != CRYPT_OK) {
+        return err;
+    }
+
+    /* load prime and b */
+    if ((err = mp_read_radix(prime, key->dp->prime, 16)) != CRYPT_OK) {
+        goto error;
+    }
+    if ((err = mp_read_radix(b, key->dp->B, 16)) != CRYPT_OK) {
+        goto error;
+    }
+
+    /* compute y^2 */
+    if ((err = mp_sqr(key->pubkey.y, t1)) != CRYPT_OK) {
+        goto error;
+    }
+
+    /* compute x^3 */
+    if ((err = mp_sqr(key->pubkey.x, t2)) != CRYPT_OK) {
+        goto error;
+    }
+    if ((err = mp_mod(t2, prime, t2)) != CRYPT_OK) {
+        goto error;
+    }
+    if ((err = mp_mul(key->pubkey.x, t2, t2)) != CRYPT_OK) {
+        goto error;
+    }
+
+    /* compute y^2 - x^3 */
+    if ((err = mp_sub(t1, t2, t1)) != CRYPT_OK) {
+        goto error;
+    }
+
+    /* compute y^2 - x^3 + 3x */
+    if ((err = mp_add(t1, key->pubkey.x, t1)) != CRYPT_OK) {
+        goto error;
+    }
+    if ((err = mp_add(t1, key->pubkey.x, t1)) != CRYPT_OK) {
+        goto error;
+    }
+    if ((err = mp_add(t1, key->pubkey.x, t1)) != CRYPT_OK) {
+        goto error;
+    }
+    if ((err = mp_mod(t1, prime, t1)) != CRYPT_OK) {
+        goto error;
+    }
+    while (mp_cmp_d(t1, 0) == LTC_MP_LT) {
+        if ((err = mp_add(t1, prime, t1)) != CRYPT_OK) {
+            goto error;
+        }
+    }
+    while (mp_cmp(t1, prime) != LTC_MP_LT) {
+        if ((err = mp_sub(t1, prime, t1)) != CRYPT_OK) {
+            goto error;
+        }
+    }
+
+    /* compare to b */
+    if (mp_cmp(t1, b) != LTC_MP_EQ) {
+        err = CRYPT_INVALID_PACKET;
+    } else {
+        err = CRYPT_OK;
+    }
+
+error:
+    mp_clear_multi(prime, b, t1, t2, NULL);
+    return err;
+}
+
+int __private_tls_ecc_import_key(const unsigned char *private_key, int private_len, const unsigned char *public_key, int public_len, ecc_key *key, const ltc_ecc_set_type *dp) {
+    int           err;
+
+    if ((!key) || (!ltc_mp.name))
+        return CRYPT_MEM;
+
+    key->type = PK_PRIVATE;
+
+    if (mp_init_multi(&key->pubkey.x, &key->pubkey.y, &key->pubkey.z, &key->k, NULL) != CRYPT_OK)
+        return CRYPT_MEM;
+
+    if ((public_len) && (!public_key[0])) {
+        public_key++;
+        public_len--;
+    }
+    if ((err = mp_read_unsigned_bin(key->pubkey.x, (unsigned char *)public_key + 1, (public_len - 1) >> 1)) != CRYPT_OK) {
+        mp_clear_multi(key->pubkey.x, key->pubkey.y, key->pubkey.z, key->k, NULL);
+        return err;
+    }
+
+    if ((err = mp_read_unsigned_bin(key->pubkey.y, (unsigned char *)public_key + 1 + ((public_len - 1) >> 1), (public_len - 1) >> 1)) != CRYPT_OK) {
+        mp_clear_multi(key->pubkey.x, key->pubkey.y, key->pubkey.z, key->k, NULL);
+        return err;
+    }
+
+    if ((err = mp_read_unsigned_bin(key->k, (unsigned char *)private_key, private_len)) != CRYPT_OK) {
+        mp_clear_multi(key->pubkey.x, key->pubkey.y, key->pubkey.z, key->k, NULL);
+        return err;
+    }
+
+    key->idx = -1;
+    key->dp  = dp;
+
+    /* set z */
+    if ((err = mp_set(key->pubkey.z, 1)) != CRYPT_OK) {
+        mp_clear_multi(key->pubkey.x, key->pubkey.y, key->pubkey.z, key->k, NULL);
+        return err;
+    }
+
+    /* is it a point on the curve?  */
+    if ((err = __private_tls_is_point(key)) != CRYPT_OK) {
+        mp_clear_multi(key->pubkey.x, key->pubkey.y, key->pubkey.z, key->k, NULL);
+        return err;
+    }
+
+    /* we're good */
+    return CRYPT_OK;
+}
+
+static inline void _isdite_fdn_qtls_signSha512RSA(void * toCrypt, int toSignLen, void * signature)
+{
+  unsigned char hash[64];
+  hash_state md;
+	hash_desc->init(&md);
+	hash_desc->process(&md, (const unsigned char*)toCrypt, (unsigned long)toSignLen);
+	hash_desc->done(&md, hash);
+
+	// Define padding scheme.
+	const int padding = LTC_LTC_PKCS_1_V1_5;
+	const unsigned long saltlen = 0;
+
+	// Sign hash.
+	unsigned long siglen = 512;
+	rsa_sign_hash_ex(hash, hash_desc->hashsize, signature, &siglen, padding, NULL, prng_idx, hash_idx, saltlen, &key);
+}
+
+void __private_tls_prf_helper(int hash_idx, unsigned long dlen, unsigned char *output, unsigned int outlen, const unsigned char *secret, const unsigned int secret_len,
+                              const unsigned char *label, unsigned int label_len, unsigned char *seed, unsigned int seed_len,
+                              unsigned char *seed_b, unsigned int seed_b_len) {
+    unsigned char digest_out0[64];
+    unsigned char digest_out1[64];
+    unsigned int i;
+    hmac_state hmac;
+
+    hmac_init(&hmac, hash_idx, secret, secret_len);
+    hmac_process(&hmac, label, label_len);
+
+    hmac_process(&hmac, seed, seed_len);
+    if ((seed_b) && (seed_b_len))
+        hmac_process(&hmac, seed_b, seed_b_len);
+    hmac_done(&hmac, digest_out0, &dlen);
+    int idx = 0;
+    while (outlen) {
+        hmac_init(&hmac, hash_idx, secret, secret_len);
+        hmac_process(&hmac, digest_out0, dlen);
+        hmac_process(&hmac, label, label_len);
+        hmac_process(&hmac, seed, seed_len);
+        if ((seed_b) && (seed_b_len))
+            hmac_process(&hmac, seed_b, seed_b_len);
+        hmac_done(&hmac, digest_out1, &dlen);
+
+        unsigned int copylen = outlen;
+        if (copylen > dlen)
+            copylen = dlen;
+
+        for (i = 0; i < copylen; i++) {
+            output[idx++] ^= digest_out1[i];
+            outlen--;
+        }
+
+        if (!outlen)
+            break;
+
+        hmac_init(&hmac, hash_idx, secret, secret_len);
+        hmac_process(&hmac, digest_out0, dlen);
+        hmac_done(&hmac, digest_out0, &dlen);
+    }
+}
+
+void __private_tls_prf(
+                       unsigned char *output, unsigned int outlen, const unsigned char *secret, const unsigned int secret_len,
+                       const unsigned char *label, unsigned int label_len, unsigned char *seed, unsigned int seed_len,
+                       unsigned char *seed_b, unsigned int seed_b_len) {
+
+        // sha256_hmac
+        unsigned char digest_out0[64];
+        unsigned char digest_out1[64];
+        unsigned long dlen = 32;
+        int hash_idx;
+        unsigned int mac_length = 32;
+
+        hash_idx = find_hash("sha256");
+        unsigned int i;
+        hmac_state hmac;
+
+        hmac_init(&hmac, hash_idx, secret, secret_len);
+        hmac_process(&hmac, label, label_len);
+
+        hmac_process(&hmac, seed, seed_len);
+        if ((seed_b) && (seed_b_len))
+            hmac_process(&hmac, seed_b, seed_b_len);
+        hmac_done(&hmac, digest_out0, &dlen);
+        int idx = 0;
+        while (outlen) {
+            hmac_init(&hmac, hash_idx, secret, secret_len);
+            hmac_process(&hmac, digest_out0, dlen);
+            hmac_process(&hmac, label, label_len);
+            hmac_process(&hmac, seed, seed_len);
+            if ((seed_b) && (seed_b_len))
+                hmac_process(&hmac, seed_b, seed_b_len);
+            hmac_done(&hmac, digest_out1, &dlen);
+
+            unsigned int copylen = outlen;
+            if (copylen > dlen)
+                copylen = (unsigned int)dlen;
+
+            for (i = 0; i < copylen; i++) {
+                output[idx++] = digest_out1[i];
+                outlen--;
+            }
+
+            if (!outlen)
+                break;
+
+            hmac_init(&hmac, hash_idx, secret, secret_len);
+            hmac_process(&hmac, digest_out0, dlen);
+            hmac_done(&hmac, digest_out0, &dlen);
+        }
+
+}
