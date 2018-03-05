@@ -34,7 +34,7 @@ do
   BUILD_STRING+=' '
 done
 
-gcc -c -g -march=native -D ISDITE_PLATFORM=0 -lpthread \
+gcc -c -O3 -mtune=generic -D ISDITE_PLATFORM=0 -lpthread \
 -D ISDITE_PLATFORM_SPEC=0 -D ISDITE_DEBUG=1 -D ISDITE_NETSTAT -D ISDITE_WPP \
 -D TLS_AMALGAMATION -D ISDITE_TLS -Wno-override-init -I $HEADER_DIR -I $HEADER_DIR2 $BUILD_STRING
 

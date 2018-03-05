@@ -8,6 +8,9 @@
 
 void is_net_httpsServer_inputHandler(void* internal, void* internal2, void* data, int size, void (*callback)(void *, void*, void*, int, int), struct isdite_net_httpsServer * instance)
 {
+  if(size < 24)
+    return;
+
   char * input = (char*)data;
 
   char hostBuf[1024];
@@ -28,7 +31,7 @@ void is_net_httpsServer_inputHandler(void* internal, void* internal2, void* data
   }
   host += 5;
 
-  while(*host != '\r')
+  while(*host != '\r' && *host != 0x00)
     hostBuf[hostCounter++] = *host++;
 
   hostBuf[hostCounter] = 0x00;
@@ -58,7 +61,7 @@ void is_net_httpsServer_inputHandler(void* internal, void* internal2, void* data
     int pathCounter = 0;
     char * ptr = ((char*)data) + 4;
 
-    while(*ptr != ' ')
+    while(*ptr != ' ' && *ptr != 0x00)
       pathBuffer[pathCounter++] = *ptr++;
 
     pathBuffer[pathCounter] = 0x00;
@@ -88,7 +91,7 @@ void is_net_httpsServer_inputHandler(void* internal, void* internal2, void* data
     int pathCounter = 0;
     char * ptr = ((char*)data) + 5;
 
-    while(*ptr != ' ')
+    while(*ptr != ' ' && *ptr != 0x00)
       pathBuffer[pathCounter++] = *ptr++;
 
     pathBuffer[pathCounter] = 0x00;

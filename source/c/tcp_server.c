@@ -107,14 +107,14 @@ static inline void _isdite_fdn_tcpSrv_finalizeCon
   struct _isdite_fdn_tcpSrv_clientDesc * pClientDesc
 )
 {
-  #ifdef ISDITE_DEBUG
+  /*#ifdef ISDITE_DEBUG
   isdite_fdn_fsyslog
   (
     IL_TRAC,
     "Finalizing connection with pool ID %d.",
     pClientDesc->iIntDescID
   );
-  #endif
+  #endif*/
 
   epoll_ctl
   (
@@ -252,7 +252,7 @@ static void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_serverDes
 
           pServerDesc->iClientStackTop--;
 
-          #ifdef ISDITE_DEBUG
+          /*#ifdef ISDITE_DEBUG
           isdite_fdn_fsyslog
           (
             IL_TRAC,
@@ -264,7 +264,7 @@ static void _isdite_fn_tcpServer_netIoWorker(struct _isdite_fdn_tcpSrv_serverDes
             pClientDesc->sClientSocket.ui16RemotePort,
             pClientDesc->iIntDescID
           );
-          #endif
+          #endif*/
         }
       }
       else // Client data.

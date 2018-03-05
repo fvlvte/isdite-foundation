@@ -342,6 +342,9 @@ static inline int _isdite_qtls_handler_clientHello
   void * pClientDesc
 )
 {
+  if(iRealSize < 38)
+    return ISDITE_QTLS_INVALID_DATA;
+
   struct _is_qtls_rsa4096_cert* cert = (struct _is_qtls_rsa4096_cert*)pContext->cert;
 	hash_desc256->init((hash_state*)pContext->msg_hash);
 
@@ -450,6 +453,9 @@ static inline int _isdite_fdn_qtls_handler_clientKeyExchange
   void * pClientDesc
 )
 {
+  if(iRealSize != 70)
+    return ISDITE_QTLS_INVALID_DATA;
+
   // Update handshake hash.
   hash_desc256->process
   (
@@ -533,6 +539,9 @@ static inline int _isdite_fdn_qtls_handler_clientFinished
   void * pClientDesc
 )
 {
+  if(iRealSize != 40)
+    return ISDITE_QTLS_INVALID_DATA;
+
   uint8_t aData[80];
   memcpy(aData, pContext->lctx.early_handshake_data+64, 80);
 
@@ -736,8 +745,12 @@ int isdite_qtls_processInput(void * sdesc, void * desc, struct isdite_fdn_qtls_c
     return ISDITE_QTLS_INVALID_DATA;
   else
   {
-    uint16_t ui16RecordLayerSize = ntohs(*(uint16_t*)(input+3)) + 5;
-    if(ui16RecordLayerSize > 8192)
+    uint16_t ui16RecordLayerSize = ntohs(*(uint16_t*)(input+3));
+
+    if(ui16RecordLayerSize > 8192 || inputSize > 8192)
+      return ISDITE_QTLS_INVALID_DATA;
+
+    if(ui16RecordLayerSize + 5 > inputSize)
       return ISDITE_QTLS_INVALID_DATA;
 
     if(inputSize >= ui16RecordLayerSize)
@@ -747,27 +760,27 @@ int isdite_qtls_processInput(void * sdesc, void * desc, struct isdite_fdn_qtls_c
       if(ctx->iState == _ISDITR_QTLS_ST_DATA_READY)
       {
         if(input[0] != 21)
-          res = _isdite_fdn_qtls_handler_applicationData(ctx, input + 5, ui16RecordLayerSize - 5, sdesc, desc);
+          res = _isdite_fdn_qtls_handler_applicationData(ctx, input + 5, ui16RecordLayerSize, sdesc, desc);
         else
-          res = ISDITE_QTLS_INSUFFICIENT_DATA;
+          return ISDITE_QTLS_INVALID_DATA;
       }
       else if(ctx->iState == _ISDITE_QTLS_ST_SHELLODONE)
       {
         if(ctx->iFlag & _ISDITE_QTLS_GOT_KEY && ctx->iFlag & _ISDITE_QTLS_CIPHER_SPEC)
-          res = _isdite_fdn_qtls_handler_clientFinished(ctx, input + 5, ui16RecordLayerSize - 5, sdesc, desc);
+          res = _isdite_fdn_qtls_handler_clientFinished(ctx, input + 5, ui16RecordLayerSize, sdesc, desc);
         else if(ctx->iFlag & _ISDITE_QTLS_GOT_KEY)
-          res = _isdite_fdn_qtls_handler_changeCipherSpec(ctx, input + 5, ui16RecordLayerSize - 5, sdesc, desc);
+          res = _isdite_fdn_qtls_handler_changeCipherSpec(ctx, input + 5, ui16RecordLayerSize, sdesc, desc);
         else
-          res = _isdite_fdn_qtls_handler_clientKeyExchange(ctx, input + 5, ui16RecordLayerSize - 5, sdesc, desc);
+          res = _isdite_fdn_qtls_handler_clientKeyExchange(ctx, input + 5, ui16RecordLayerSize, sdesc, desc);
       }
       else
-        res = _isdite_qtls_handler_clientHello(ctx, input + 5, ui16RecordLayerSize - 5, sdesc, desc);
+        res = _isdite_qtls_handler_clientHello(ctx, input + 5, ui16RecordLayerSize, sdesc, desc);
 
 
       if(res == ISDITE_QTLS_INVALID_DATA)
         return res;
 
-      if(ui16RecordLayerSize == inputSize)
+      if(ui16RecordLayerSize + 5 == inputSize)
         return res;
       else
         return isdite_qtls_processInput
@@ -775,8 +788,8 @@ int isdite_qtls_processInput(void * sdesc, void * desc, struct isdite_fdn_qtls_c
           sdesc,
           desc,
           ctx,
-          input+ui16RecordLayerSize,
-          inputSize - ui16RecordLayerSize
+          input+ui16RecordLayerSize+5,
+          inputSize - ui16RecordLayerSize - 5
         );
     }
     else
