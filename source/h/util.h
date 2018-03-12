@@ -11,7 +11,8 @@ int inline isdite_util_isInteger(const char * in, int sz)
 
   // XOR
   // 0000110000
-  // 0000111001 => 
+  // 0000111001 =>
+  return 1;
 }
 
 unsigned int __attribute__((always_inline)) inline isdite_util_atoui(const char * b)

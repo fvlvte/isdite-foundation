@@ -25,7 +25,7 @@ void is_net_httpsServer_inputHandler(void* internal, void* internal2, void* data
     return;
   }
 
-  if(host[5] = ' ')
+  if(host[5] == ' ')
   {
     host++;
   }

@@ -81,8 +81,8 @@ ecc_key ek;
 char eccKey[4096];
 int ecKeySz = 0;
 
-char eccExpKey[4096];
-long eccExpKeySz = 0;
+uint8_t eccExpKey[4096];
+unsigned long eccExpKeySz = 0;
 
 #include "qtls_helper.in"
 
@@ -485,7 +485,7 @@ static inline int _isdite_fdn_qtls_handler_clientKeyExchange
     48,
     aSharedSecret,
     outSz,
-    "master secret",
+    (const unsigned char*)"master secret",
     13,
     pContext->lctx.early_handshake_data,
     32,
@@ -499,7 +499,7 @@ static inline int _isdite_fdn_qtls_handler_clientKeyExchange
     40,
     pContext->lctx.early_handshake_data+64,
     48,
-    "key expansion",
+    (const unsigned char*)"key expansion",
     13,
     pContext->lctx.early_handshake_data+32,
     32,
@@ -602,8 +602,8 @@ static inline int _isdite_fdn_qtls_handler_clientFinished
     12,
     aData,
     48,
-    "server finished",
-    strlen("server finished"),
+    (const unsigned char*)"server finished",
+    15,
     aHash,
     32,
     NULL,

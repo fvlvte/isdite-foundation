@@ -78,8 +78,8 @@ void _isdite_fdn_syslog_makeLog(int severity, char * data, int ex)
   char dtimeBuffer[160];
   _isdite_fn_syslog_idtoa(severity, dtimeBuffer);
 
-  printf(dtimeBuffer);
-  printf(data);
+  printf("%s", dtimeBuffer);
+  printf("%s", data);
   if(ex == 0)
     printf("\n");
 }

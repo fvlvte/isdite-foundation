@@ -30,7 +30,7 @@ struct isdite_fdn_qtls_context
 
   void * cert;
 
-  char conDataBuffer[4096];
+  uint8_t conDataBuffer[4096];
   int conDataSz;
 };
 

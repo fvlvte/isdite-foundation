@@ -24,6 +24,6 @@ done
 # BUILD DEPENDENCIES
 ./../../isdite-foundation/build/make-linux-x86.sh
 
-gcc -o $BUILD_DIR/$LIB_DIR/$TARGET -g -lpthread -D ISDITE_PLATFORM=0 \
+clang -o $BUILD_DIR/$LIB_DIR/$TARGET -g -lpthread -D ISDITE_PLATFORM=0 \
 -D ISDITE_PLATFORM_SPEC=0 -D ISDITE_DEBUG=1 -I $REMOTE_HEADER_DIR \
 -I $HEADER_DIR $BUILD_STRING $REMOTE_LIBS
