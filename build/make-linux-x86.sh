@@ -9,7 +9,7 @@ HEADER_DIR='../source/h'
 HEADER_DIR2='../source/c'
 SOURCE_DIR='../source/c'
 
-SOURCE_FILES=('app.c log.c tcp_server.c ierr.c qtls.c ext/aes.c mem.c util.c https_server.c')
+SOURCE_FILES=('app.c log.c tcp_server.c ierr.c qtls.c ext/aes.c mem.c util.c https_server.c rt/rtdb.c')
 
 if [ ! -d $BUILD_DIR ]; then
   mkdir $BUILD_DIR;
@@ -34,7 +34,7 @@ do
   BUILD_STRING+=' '
 done
 
-clang -c -O3 -mtune=generic -D ISDITE_PLATFORM=0 \
+clang -c -g -mtune=generic -D ISDITE_PLATFORM=0 \
 -D ISDITE_PLATFORM_SPEC=0 -D ISDITE_DEBUG=1 -D ISDITE_NETSTAT -D ISDITE_WPP \
 -D TLS_AMALGAMATION -D ISDITE_TLS -I $HEADER_DIR -I $HEADER_DIR2 $BUILD_STRING
 
