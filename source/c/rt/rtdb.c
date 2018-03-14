@@ -6,7 +6,7 @@
 #define RTDB_TYPE_STR 2
 #define RTDB_TYPE_STRARR 3
 
-#define RTDB_RESERVE_SIZE RTDB_RESERVE_SIZE
+#define RTDB_RESERVE_SIZE 128
 
 struct _isdite_rt_rtdb_key
 {
