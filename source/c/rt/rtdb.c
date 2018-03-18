@@ -1,4 +1,5 @@
 #include "rt/rtdb.h"
+#include <stdio.h>
 
 #define RTDB_NO_FREE 0x1
 
@@ -75,12 +76,14 @@ int isdite_rt_dbInitialize(unsigned int uiArgCount, char * pArgVal[])
 
     if(i + 1 == uiArgCount || pArgVal[i + 1][0] == '-') // Single logic type.
     {
+      printf("PARSING BOOLEAN PARAM %s\n",  pArgVal[i] + 1);
       pKey->iType = RTDB_TYPE_BOOL;
       pKey->pData = (void*)1;
       pKey->iFlags = 0;
     }
     else if(i + 2 < uiArgCount && pArgVal[i + 2][0] != '-') // Array type.
     {
+      printf("PARSING ARRAY PARAM %s\n",  pArgVal[i] + 1);
       unsigned int uiArraySize = 2;
 
       for(unsigned int n = i + 3; n < uiArgCount;n++)
@@ -91,13 +94,19 @@ int isdite_rt_dbInitialize(unsigned int uiArgCount, char * pArgVal[])
       }
 
       pKey->iType = RTDB_TYPE_STRARR;
-      pKey->pData = pArgVal + sizeof(char*) * (i + 1);
+      pKey->pData = pArgVal + i + 1;
       pKey->iFlags = uiArraySize;
+
+      for(int i = 0; i < uiArraySize;i++)
+      {
+        printf("%s\n", ((char**)pKey->pData)[i]);
+      }
 
       i += uiArraySize;
     }
     else // Single value type.
     {
+      printf("PARSING SINGLE PARAM %s %s\n",  pArgVal[i] + 1, pArgVal[i + 1]);
       pKey->iType = RTDB_TYPE_STR;
       pKey->pData = pArgVal[i + 1];
       pKey->iFlags = 0;

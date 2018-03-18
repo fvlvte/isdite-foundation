@@ -3,6 +3,19 @@
 
 #define isspace_fast(x) ((x) == ' ' || (x) == '\t' || (x) == '\n' || (x) == '\v' || (x) == '\f' || (x) == '\r')
 
+/* signed / unsigned integer check */
+int inline isdite_util_isSInt(const char * input)
+{
+    // We should use use bitmask to perform fast analys.
+
+    if(*input == 0)
+      return 0;
+
+    // 2 XOR bit masks to extract make number from ASCII code.
+
+    
+}
+
 int inline isdite_util_isInteger(const char * in, int sz)
 {
   // XOR
